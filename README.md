@@ -16,7 +16,7 @@ python -m http.server 8000
 
 ## Milestones
 
-See `_Index.md` for the full roadmap. Current: **M2 — enemies follow a spiral path toward the center star.**
+See `_Index.md` for the full roadmap. Current: **M3 — click to place a Crystal Prism tower (no shooting yet).**
 
 ## Stack
 

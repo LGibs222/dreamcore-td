@@ -1,5 +1,5 @@
-// Dreamcore TD — M2: enemies follow a dreamcore spiral toward the center star
-// The orb from M1 is now the "Forgotten Star" — the thing enemies are marching toward.
+// Dreamcore TD — M3: click to place a Crystal Prism tower (it just sits, for now).
+// Enemies still march the spiral; towers don't shoot yet — that's M4.
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -13,7 +13,15 @@ const COLORS = {
   path:      'rgba(201, 166, 255, 0.5)',
   enemyCore: '#ff9ad6',
   enemyMid:  '#c2a0ff',
+  prismCore: '#b8f4ff',
+  prismEdge: '#6ad1ff',
+  prismGlow: '#a8c8ff',
+  hint:      'rgba(184, 244, 255, 0.35)',
 };
+
+const MIN_TOWER_SPACING = 48;   // px — don't let towers stack on top of each other
+const MIN_PATH_DISTANCE = 34;   // px — can't place directly on the path
+const CENTER_KEEPOUT    = 80;   // px — can't cover the Forgotten Star
 
 const PATH = {
   turns: 3,       // spiral loops from edge to center
@@ -142,6 +150,98 @@ function drawEnemies() {
   }
 }
 
+// Towers — Crystal Prisms (tower #1 from the roster)
+const towers = [];
+
+function drawCrystalPrism(x, y, t, pulse = 1) {
+  const size = 18 * pulse;
+  // soft aura
+  drawGlow(x, y, size * 2.6, COLORS.prismGlow, 0.25);
+  // diamond body — 4 points, rotating slowly for a living feel
+  const rot = t * 0.0004;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  const grad = ctx.createLinearGradient(0, -size, 0, size);
+  grad.addColorStop(0, COLORS.prismCore);
+  grad.addColorStop(1, COLORS.prismEdge);
+  ctx.fillStyle = grad;
+  ctx.strokeStyle = COLORS.prismCore;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(0, -size);
+  ctx.lineTo(size * 0.65, 0);
+  ctx.lineTo(0, size);
+  ctx.lineTo(-size * 0.65, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  // inner highlight
+  ctx.globalAlpha = 0.6;
+  ctx.fillStyle = COLORS.prismCore;
+  ctx.beginPath();
+  ctx.moveTo(0, -size * 0.5);
+  ctx.lineTo(size * 0.25, 0);
+  ctx.lineTo(0, size * 0.5);
+  ctx.lineTo(-size * 0.25, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function drawTowers(t) {
+  for (const tw of towers) drawCrystalPrism(tw.x, tw.y, t);
+}
+
+// Placement validation — returns null if OK, else a human-readable reason
+function placementError(x, y) {
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  if (Math.hypot(x - cx, y - cy) < CENTER_KEEPOUT) return 'too close to the star';
+  for (const tw of towers) {
+    if (Math.hypot(x - tw.x, y - tw.y) < MIN_TOWER_SPACING) return 'too close to another tower';
+  }
+  // sample the path and reject if close to any sample
+  for (let i = 0; i <= 60; i++) {
+    const p = pathPoint(i / 60);
+    if (Math.hypot(x - p.x, y - p.y) < MIN_PATH_DISTANCE) return 'on the path';
+  }
+  return null;
+}
+
+// Mouse tracking for the placement hint
+let mouseX = -999, mouseY = -999, mouseInside = false;
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  mouseX = e.clientX - rect.left;
+  mouseY = e.clientY - rect.top;
+  mouseInside = true;
+});
+canvas.addEventListener('mouseleave', () => { mouseInside = false; });
+
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  if (placementError(x, y)) return;
+  towers.push({ x, y });
+});
+
+function drawPlacementHint() {
+  if (!mouseInside) return;
+  const err = placementError(mouseX, mouseY);
+  ctx.save();
+  ctx.globalAlpha = err ? 0.4 : 0.8;
+  ctx.strokeStyle = err ? '#ff7aa2' : COLORS.hint;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 6]);
+  ctx.beginPath();
+  ctx.arc(mouseX, mouseY, 22, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
 // Main loop with delta time — keeps motion framerate-independent
 let lastT = 0;
 function loop(t) {
@@ -154,6 +254,8 @@ function loop(t) {
 
   updateEnemies(dt);
   drawEnemies();
+  drawTowers(t);
+  drawPlacementHint();
 
   // Center star — the thing enemies are trying to reach
   const cx = canvas.width / 2;
