@@ -16,7 +16,7 @@ python -m http.server 8000
 
 ## Milestones
 
-See `_Index.md` for the full roadmap. Current: **M5 — waves, currency, win/lose states. A real game loop.**
+See `_Index.md` for the full roadmap. Current: **M6 — all 6 towers: Crystal Prism, Star Lantern, Memory Beacon, Watcher, Amplifier, Supernova Burst.**
 
 ## Stack
 

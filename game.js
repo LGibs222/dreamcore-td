@@ -1,4 +1,5 @@
-// Dreamcore TD — M5: waves + currency + win/lose states.
+// Dreamcore TD — M6: all 6 towers at base stats.
+// (Aura stacking rules = M8, Supernova visual polish = M9, upgrades = M7.)
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -121,10 +122,10 @@ const enemies = [];
 
 function spawnEnemy(hpOverride, speedOverride) {
   const maxHp = hpOverride ?? 30;
-  const baseSpeed = speedOverride ?? 0.00011;
+  const baseSpeed = speedOverride ?? 0.000075;
   enemies.push({
     progress: 0,
-    speed: baseSpeed + Math.random() * 0.00004,
+    speed: baseSpeed + Math.random() * 0.00002,
     radius: 7 + Math.random() * 3,
     hp: maxHp,
     maxHp,
@@ -144,15 +145,14 @@ const GAME = {
   waveHp: 30,
   waveSpeed: 0.00011,
 };
-const TOWER_COST = 50;
 const KILL_REWARD = 10;
 const WAVES = [
-  { count: 8,  hp: 30,  speed: 0.00011, gap: 1400 },
-  { count: 10, hp: 40,  speed: 0.00012, gap: 1200 },
-  { count: 12, hp: 55,  speed: 0.00013, gap: 1100 },
-  { count: 14, hp: 75,  speed: 0.00014, gap: 1000 },
-  { count: 16, hp: 100, speed: 0.00015, gap: 900  },
-  { count: 20, hp: 140, speed: 0.00017, gap: 800  },
+  { count: 8,  hp: 30,  speed: 0.000075, gap: 1400 },
+  { count: 10, hp: 40,  speed: 0.000082, gap: 1200 },
+  { count: 12, hp: 55,  speed: 0.000090, gap: 1100 },
+  { count: 14, hp: 75,  speed: 0.000098, gap: 1000 },
+  { count: 16, hp: 100, speed: 0.000108, gap: 900  },
+  { count: 20, hp: 140, speed: 0.000120, gap: 800  },
 ];
 
 function startNextWave() {
@@ -202,6 +202,7 @@ function resetGame() {
   enemies.length = 0;
   projectiles.length = 0;
   particles.length = 0;
+  blasts.length = 0;
   towers.length = 0;
   GAME.money = 100;
   GAME.lives = 10;
@@ -213,13 +214,15 @@ function resetGame() {
 }
 
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'r' || e.key === 'R') resetGame();
+  if (e.key === 'r' || e.key === 'R') { resetGame(); return; }
+  const idx = parseInt(e.key, 10);
+  if (idx >= 1 && idx <= TYPE_KEYS.length) selectedType = TYPE_KEYS[idx - 1];
 });
 
 function enemyPos(e) { return pathPoint(e.progress); }
 
 function updateEnemies(dt) {
-  for (const e of enemies) e.progress += e.speed * dt;
+  for (const e of enemies) e.progress += e.speed * slowMultiplierFor(e) * dt;
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (e.hp <= 0) {
@@ -255,50 +258,162 @@ function drawEnemies() {
   }
 }
 
-// Towers — Crystal Prisms (tower #1 from the roster)
+// Towers — 6 types (the full roster)
 const towers = [];
-const TOWER_STATS = {
-  range: 160,
-  fireIntervalMs: 700,
-  damage: 10,
-};
-const PROJECTILE_SPEED = 0.55; // px per ms
 const projectiles = [];
 const particles = [];
+const blasts = [];             // expanding AOE rings (Supernova)
+const PROJECTILE_SPEED = 0.55; // px per ms
 
-function findTarget(tower) {
-  // pick the enemy furthest along the path (closest to the star) that's in range
-  let best = null;
-  let bestProgress = -1;
+const TOWER_TYPES = {
+  prism: {
+    name: 'Crystal Prism',   key: '1', cost: 50,
+    behavior: 'shoot',
+    baseRange: 160, baseDamage: 10, fireInterval: 700,
+    color: '#b8f4ff',
+  },
+  lantern: {
+    name: 'Star Lantern',    key: '2', cost: 60,
+    behavior: 'slow',
+    baseRange: 120, slowMult: 0.5,
+    color: '#ffd580',
+  },
+  beacon: {
+    name: 'Memory Beacon',   key: '3', cost: 70,
+    behavior: 'dot',
+    baseRange: 140, tickInterval: 300, tickDamage: 4,
+    color: '#a8ffd8',
+  },
+  watcher: {
+    name: 'The Watcher',     key: '4', cost: 80,
+    behavior: 'aura',
+    baseRange: 180, auraType: 'range', auraMult: 1.25,
+    color: '#d8b0ff',
+  },
+  amplifier: {
+    name: 'Nightmare Amp',   key: '5', cost: 90,
+    behavior: 'aura',
+    baseRange: 180, auraType: 'damage', auraMult: 1.5,
+    color: '#ff9ac2',
+  },
+  supernova: {
+    name: 'Supernova Burst', key: '6', cost: 120,
+    behavior: 'aoe',
+    baseRange: 130, baseDamage: 18, fireInterval: 1500,
+    color: '#ffd0f5',
+  },
+};
+const TYPE_KEYS = Object.keys(TOWER_TYPES);
+let selectedType = 'prism';
+
+// Compute each tower's effective range/damage based on nearby aura towers.
+// M6 rule: aura effects of the same type stack multiplicatively.
+// (M8 will refine: only highest-tier aura per type applies; L5 synergy doubles radius.)
+function computeTowerEffectives() {
+  for (const tw of towers) {
+    const t = TOWER_TYPES[tw.type];
+    let range  = t.baseRange  ?? 0;
+    let damage = t.baseDamage ?? 0;
+    for (const other of towers) {
+      if (other === tw) continue;
+      const ot = TOWER_TYPES[other.type];
+      if (ot.behavior !== 'aura') continue;
+      const d = Math.hypot(other.x - tw.x, other.y - tw.y);
+      if (d > ot.baseRange) continue;
+      if (ot.auraType === 'range')  range  *= ot.auraMult;
+      if (ot.auraType === 'damage') damage *= ot.auraMult;
+    }
+    tw.effectiveRange  = range;
+    tw.effectiveDamage = damage;
+  }
+}
+
+function findTargetInRange(tower, range) {
+  let best = null, bestProgress = -1;
   for (const e of enemies) {
     const p = enemyPos(e);
     const d = Math.hypot(p.x - tower.x, p.y - tower.y);
-    if (d <= TOWER_STATS.range && e.progress > bestProgress) {
-      best = e;
-      bestProgress = e.progress;
+    if (d <= range && e.progress > bestProgress) {
+      best = e; bestProgress = e.progress;
     }
   }
   return best;
 }
 
 function updateTowers(dt) {
+  computeTowerEffectives();
+
   for (const tw of towers) {
+    const t = TOWER_TYPES[tw.type];
     tw.fireCooldown = Math.max(0, (tw.fireCooldown || 0) - dt);
-    if (tw.fireCooldown > 0) continue;
-    const target = findTarget(tw);
-    if (!target) continue;
-    const p = enemyPos(target);
-    const dx = p.x - tw.x, dy = p.y - tw.y;
-    const len = Math.hypot(dx, dy) || 1;
-    projectiles.push({
-      x: tw.x, y: tw.y,
-      vx: (dx / len) * PROJECTILE_SPEED,
-      vy: (dy / len) * PROJECTILE_SPEED,
-      damage: TOWER_STATS.damage,
-      target, // homing — we re-aim toward this enemy each frame
-    });
-    tw.fireCooldown = TOWER_STATS.fireIntervalMs;
+
+    if (t.behavior === 'shoot') {
+      if (tw.fireCooldown > 0) continue;
+      const target = findTargetInRange(tw, tw.effectiveRange);
+      if (!target) continue;
+      const p = enemyPos(target);
+      const dx = p.x - tw.x, dy = p.y - tw.y;
+      const len = Math.hypot(dx, dy) || 1;
+      projectiles.push({
+        x: tw.x, y: tw.y,
+        vx: (dx / len) * PROJECTILE_SPEED,
+        vy: (dy / len) * PROJECTILE_SPEED,
+        damage: tw.effectiveDamage,
+        target,
+        color: t.color,
+      });
+      tw.fireCooldown = t.fireInterval;
+
+    } else if (t.behavior === 'aoe') {
+      if (tw.fireCooldown > 0) continue;
+      // only fire if someone is in range
+      let anyone = false;
+      for (const e of enemies) {
+        const p = enemyPos(e);
+        if (Math.hypot(p.x - tw.x, p.y - tw.y) <= tw.effectiveRange) { anyone = true; break; }
+      }
+      if (!anyone) continue;
+      for (const e of enemies) {
+        const p = enemyPos(e);
+        if (Math.hypot(p.x - tw.x, p.y - tw.y) <= tw.effectiveRange) {
+          e.hp -= tw.effectiveDamage;
+        }
+      }
+      blasts.push({
+        x: tw.x, y: tw.y,
+        radius: 0, maxRadius: tw.effectiveRange,
+        life: 500, maxLife: 500,
+        color: t.color,
+      });
+      tw.fireCooldown = t.fireInterval;
+
+    } else if (t.behavior === 'dot') {
+      tw.tickTimer = (tw.tickTimer || 0) - dt;
+      if (tw.tickTimer > 0) continue;
+      for (const e of enemies) {
+        const p = enemyPos(e);
+        if (Math.hypot(p.x - tw.x, p.y - tw.y) <= tw.effectiveRange) {
+          e.hp -= t.tickDamage;
+        }
+      }
+      tw.tickTimer = t.tickInterval;
+    }
+    // 'slow' and 'aura' are passive — resolved in slowMultiplierFor / computeTowerEffectives
   }
+}
+
+// Slow from overlapping Star Lanterns — takes the strongest (smallest mult).
+function slowMultiplierFor(e) {
+  let mult = 1;
+  const p = enemyPos(e);
+  for (const tw of towers) {
+    const t = TOWER_TYPES[tw.type];
+    if (t.behavior !== 'slow') continue;
+    if (Math.hypot(p.x - tw.x, p.y - tw.y) <= tw.effectiveRange) {
+      mult = Math.min(mult, t.slowMult);
+    }
+  }
+  return mult;
 }
 
 function updateProjectiles(dt) {
@@ -339,11 +454,34 @@ function updateProjectiles(dt) {
 
 function drawProjectiles() {
   for (const pr of projectiles) {
-    drawGlow(pr.x, pr.y, 10, COLORS.prismCore, 0.7);
+    drawGlow(pr.x, pr.y, 10, pr.color || COLORS.prismCore, 0.7);
     ctx.fillStyle = '#ffffff';
     ctx.beginPath();
     ctx.arc(pr.x, pr.y, 2.2, 0, Math.PI * 2);
     ctx.fill();
+  }
+}
+
+function updateBlasts(dt) {
+  for (let i = blasts.length - 1; i >= 0; i--) {
+    const b = blasts[i];
+    b.life -= dt;
+    b.radius = b.maxRadius * (1 - b.life / b.maxLife);
+    if (b.life <= 0) blasts.splice(i, 1);
+  }
+}
+
+function drawBlasts() {
+  for (const b of blasts) {
+    const alpha = b.life / b.maxLife;
+    ctx.save();
+    ctx.globalAlpha = alpha * 0.7;
+    ctx.strokeStyle = b.color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 }
 
@@ -382,52 +520,104 @@ function drawParticles() {
   ctx.globalAlpha = 1;
 }
 
-function drawCrystalPrism(x, y, t, pulse = 1) {
-  const size = 18 * pulse;
-  // soft aura
-  drawGlow(x, y, size * 2.6, COLORS.prismGlow, 0.25);
-  // diamond body — 4 points, rotating slowly for a living feel
-  const rot = t * 0.0004;
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(rot);
-  const grad = ctx.createLinearGradient(0, -size, 0, size);
-  grad.addColorStop(0, COLORS.prismCore);
-  grad.addColorStop(1, COLORS.prismEdge);
-  ctx.fillStyle = grad;
-  ctx.strokeStyle = COLORS.prismCore;
-  ctx.lineWidth = 1.5;
+function drawStarShape(points, outer, inner) {
   ctx.beginPath();
-  ctx.moveTo(0, -size);
-  ctx.lineTo(size * 0.65, 0);
-  ctx.lineTo(0, size);
-  ctx.lineTo(-size * 0.65, 0);
+  for (let i = 0; i < points * 2; i++) {
+    const r = i % 2 === 0 ? outer : inner;
+    const a = (i / (points * 2)) * Math.PI * 2 - Math.PI / 2;
+    const x = Math.cos(a) * r, y = Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
   ctx.closePath();
   ctx.fill();
   ctx.stroke();
-  // inner highlight
-  ctx.globalAlpha = 0.6;
-  ctx.fillStyle = COLORS.prismCore;
-  ctx.beginPath();
-  ctx.moveTo(0, -size * 0.5);
-  ctx.lineTo(size * 0.25, 0);
-  ctx.lineTo(0, size * 0.5);
-  ctx.lineTo(-size * 0.25, 0);
-  ctx.closePath();
-  ctx.fill();
-  ctx.globalAlpha = 1;
+}
+
+function drawTower(tw, t) {
+  const type = TOWER_TYPES[tw.type];
+  drawGlow(tw.x, tw.y, 44, type.color, 0.22);
+  ctx.save();
+  ctx.translate(tw.x, tw.y);
+  ctx.strokeStyle = type.color;
+  ctx.lineWidth = 1.5;
+
+  if (tw.type === 'prism') {
+    ctx.rotate(t * 0.0004);
+    const size = 18;
+    const grad = ctx.createLinearGradient(0, -size, 0, size);
+    grad.addColorStop(0, '#b8f4ff'); grad.addColorStop(1, '#6ad1ff');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(0, -size); ctx.lineTo(size * 0.65, 0);
+    ctx.lineTo(0, size);  ctx.lineTo(-size * 0.65, 0);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+
+  } else if (tw.type === 'lantern') {
+    ctx.rotate(t * 0.0006);
+    ctx.fillStyle = type.color;
+    drawStarShape(6, 16, 7);
+    ctx.globalAlpha = 0.6;
+    ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+
+  } else if (tw.type === 'beacon') {
+    const pulse = 1 + Math.sin(t * 0.004) * 0.15;
+    ctx.fillStyle = type.color;
+    ctx.beginPath(); ctx.arc(0, 0, 14 * pulse, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath(); ctx.arc(0, 0, 8 * pulse, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+
+  } else if (tw.type === 'watcher') {
+    ctx.fillStyle = type.color;
+    ctx.beginPath(); ctx.ellipse(0, 0, 22, 12, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#1a1040';
+    ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = type.color;
+    ctx.beginPath(); ctx.arc(0, 0, 2.5, 0, Math.PI * 2); ctx.fill();
+
+  } else if (tw.type === 'amplifier') {
+    ctx.rotate(t * 0.0008);
+    ctx.fillStyle = type.color;
+    ctx.beginPath();
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2 - Math.PI / 2;
+      const x = Math.cos(a) * 18, y = Math.sin(a) * 18;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+
+  } else if (tw.type === 'supernova') {
+    ctx.rotate(t * 0.0005);
+    ctx.fillStyle = type.color;
+    drawStarShape(8, 18, 7);
+    ctx.globalAlpha = 0.7;
+    ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
   ctx.restore();
 }
 
 function drawTowers(t) {
+  // faint aura radius ring for aura towers (so you can see where their effect reaches)
   for (const tw of towers) {
-    // faint range circle, only briefly visible after placement or when idle
-    drawCrystalPrism(tw.x, tw.y, t);
+    const type = TOWER_TYPES[tw.type];
+    if (type.behavior !== 'aura') continue;
+    ctx.save();
+    ctx.globalAlpha = 0.08;
+    ctx.fillStyle = type.color;
+    ctx.beginPath();
+    ctx.arc(tw.x, tw.y, type.baseRange, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
+  for (const tw of towers) drawTower(tw, t);
 }
 
 function drawTowerRanges() {
-  // show range ring for the tower nearest the cursor (helps placement intuition)
   if (!mouseInside || towers.length === 0) return;
   let nearest = towers[0];
   let bestD = Math.hypot(mouseX - nearest.x, mouseY - nearest.y);
@@ -435,14 +625,15 @@ function drawTowerRanges() {
     const d = Math.hypot(mouseX - tw.x, mouseY - tw.y);
     if (d < bestD) { bestD = d; nearest = tw; }
   }
-  if (bestD > 40) return; // only when hovering close to a tower
+  if (bestD > 40) return;
+  const type = TOWER_TYPES[nearest.type];
   ctx.save();
-  ctx.globalAlpha = 0.25;
-  ctx.strokeStyle = COLORS.prismGlow;
+  ctx.globalAlpha = 0.3;
+  ctx.strokeStyle = type.color;
   ctx.lineWidth = 1;
   ctx.setLineDash([3, 6]);
   ctx.beginPath();
-  ctx.arc(nearest.x, nearest.y, TOWER_STATS.range, 0, Math.PI * 2);
+  ctx.arc(nearest.x, nearest.y, nearest.effectiveRange || type.baseRange, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
 }
@@ -473,31 +664,102 @@ canvas.addEventListener('mousemove', (e) => {
 });
 canvas.addEventListener('mouseleave', () => { mouseInside = false; });
 
+// Layout helper — which palette cell is at (x, y), or null
+function paletteCellAt(x, y) {
+  const cellW = 128, cellH = 58, gap = 8;
+  const n = TYPE_KEYS.length;
+  const totalW = cellW * n + gap * (n - 1);
+  let cx = (canvas.width - totalW) / 2;
+  const cy = canvas.height - cellH - 16;
+  if (y < cy || y > cy + cellH) return null;
+  for (const key of TYPE_KEYS) {
+    if (x >= cx && x <= cx + cellW) return key;
+    cx += cellW + gap;
+  }
+  return null;
+}
+
 canvas.addEventListener('click', (e) => {
-  if (GAME.status === 'won' || GAME.status === 'lost') return;
   const rect = canvas.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const y = e.clientY - rect.top;
+
+  // palette click → switch selected tower (works even in win/lose so you can eyeball)
+  const paletteKey = paletteCellAt(x, y);
+  if (paletteKey) { selectedType = paletteKey; return; }
+
+  if (GAME.status === 'won' || GAME.status === 'lost') return;
   if (placementError(x, y)) return;
-  if (GAME.money < TOWER_COST) return; // can't afford
-  GAME.money -= TOWER_COST;
-  towers.push({ x, y, fireCooldown: 0 });
+  const type = TOWER_TYPES[selectedType];
+  if (GAME.money < type.cost) return;
+  GAME.money -= type.cost;
+  towers.push({ x, y, type: selectedType, fireCooldown: 0, tickTimer: 0 });
 });
 
 function drawPlacementHint() {
   if (!mouseInside) return;
   if (GAME.status === 'won' || GAME.status === 'lost') return;
+  if (paletteCellAt(mouseX, mouseY)) return; // cursor over the palette — no placement preview
+  const type = TOWER_TYPES[selectedType];
   const err = placementError(mouseX, mouseY);
-  const broke = GAME.money < TOWER_COST;
+  const broke = GAME.money < type.cost;
   const bad = err || broke;
   ctx.save();
-  ctx.globalAlpha = bad ? 0.4 : 0.8;
-  ctx.strokeStyle = bad ? '#ff7aa2' : COLORS.hint;
+  // placement ring at cursor
+  ctx.globalAlpha = bad ? 0.4 : 0.85;
+  ctx.strokeStyle = bad ? '#ff7aa2' : type.color;
   ctx.lineWidth = 1.5;
   ctx.setLineDash([4, 6]);
   ctx.beginPath();
   ctx.arc(mouseX, mouseY, 22, 0, Math.PI * 2);
   ctx.stroke();
+  // preview this tower's range/aura radius
+  if (!bad) {
+    ctx.globalAlpha = 0.2;
+    ctx.strokeStyle = type.color;
+    ctx.setLineDash([3, 6]);
+    ctx.beginPath();
+    ctx.arc(mouseX, mouseY, type.baseRange, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawTowerPalette() {
+  const cellW = 128, cellH = 58, gap = 8;
+  const n = TYPE_KEYS.length;
+  const totalW = cellW * n + gap * (n - 1);
+  let x = (canvas.width - totalW) / 2;
+  const y = canvas.height - cellH - 16;
+
+  ctx.save();
+  ctx.font = '12px system-ui, sans-serif';
+  ctx.textBaseline = 'alphabetic';
+  for (const key of TYPE_KEYS) {
+    const type = TOWER_TYPES[key];
+    const selected = key === selectedType;
+    const broke = GAME.money < type.cost;
+
+    ctx.globalAlpha = selected ? 0.35 : 0.15;
+    ctx.fillStyle = type.color;
+    ctx.fillRect(x, y, cellW, cellH);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = selected ? '#ffffff' : 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = selected ? 2 : 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, cellW - 1, cellH - 1);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#cfd0ff';
+    ctx.fillText(type.key, x + 10, y + 20);
+
+    ctx.fillStyle = selected ? '#ffffff' : '#cfd0ff';
+    ctx.fillText(type.name, x + 26, y + 20);
+
+    ctx.fillStyle = broke ? '#ff7aa2' : (selected ? '#b8f4ff' : '#a8b0d8');
+    ctx.fillText(`✦ ${type.cost}`, x + 10, y + cellH - 12);
+
+    x += cellW + gap;
+  }
   ctx.restore();
 }
 
@@ -534,11 +796,14 @@ function drawHUD() {
     ctx.fillText(`Wave ${GAME.wave} — ${GAME.toSpawn + enemies.length} remaining`, canvas.width / 2, 14);
   }
 
-  // cost hint on bottom-left
+  // hint bar (bottom-left) — palette handles the rest
   ctx.textAlign = 'left';
   ctx.globalAlpha = 0.6;
   ctx.fillStyle = '#cfd0ff';
-  ctx.fillText(`Click to place a Crystal Prism  ·  Cost ${TOWER_COST}  ·  Press R to restart`, pad, canvas.height - 26);
+  ctx.fillText(`Keys 1–6 pick a tower · Click to place · Press R to restart`, pad, 18);
+
+  // tower palette — 6 cells along the bottom
+  drawTowerPalette();
 
   // win / lose banner
   if (GAME.status === 'won' || GAME.status === 'lost') {
@@ -570,14 +835,16 @@ function loop(t) {
   drawPath();
 
   updateWaves(dt);
+  updateTowers(dt);        // compute effectives first — enemies need slow mult
   updateEnemies(dt);
-  updateTowers(dt);
   updateProjectiles(dt);
   updateParticles(dt);
+  updateBlasts(dt);
 
   drawEnemies();
   drawProjectiles();
   drawParticles();
+  drawBlasts();
   drawTowers(t);
   drawTowerRanges();
   drawPlacementHint();
