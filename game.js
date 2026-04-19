@@ -291,42 +291,42 @@ const TOWER_TYPES = {
   prism: {
     name: 'Crystal Prism',   key: '1', cost: 50,
     behavior: 'shoot',
-    baseRange: 160, baseDamage: 15, fireInterval: 700,
+    baseRange: 128, baseDamage: 15, fireInterval: 700,
     color: '#b8f4ff',
   },
   lantern: {
     name: 'Star Lantern',    key: '2', cost: 60,
     behavior: 'slow',
-    baseRange: 120, slowMult: 0.5,
+    baseRange: 96, slowMult: 0.5,
     color: '#ffd580',
   },
   beacon: {
     name: 'Memory Beacon',   key: '3', cost: 70,
     behavior: 'dot',
-    baseRange: 140, tickInterval: 300, tickDamage: 9,
+    baseRange: 112, tickInterval: 300, tickDamage: 9,
     color: '#a8ffd8',
   },
   watcher: {
     name: 'The Watcher',     key: '4', cost: 80,
     behavior: 'aura',
-    baseRange: 180, auraType: 'range', auraMult: 1.25,
+    baseRange: 144, auraType: 'range', auraMult: 1.25,
     color: '#d8b0ff',
   },
   amplifier: {
     name: 'Nightmare Amp',   key: '5', cost: 90,
     behavior: 'aura',
-    baseRange: 180, auraType: 'damage', auraMult: 1.5,
+    baseRange: 144, auraType: 'damage', auraMult: 1.5,
     color: '#ff9ac2',
   },
   supernova: {
     name: 'Supernova Burst', key: '6', cost: 120,
     behavior: 'shoot-explode',
-    baseRange: 260,                        // can lob across a wide area
+    baseRange: 208,                        // can lob across a wide area
     baseDamage: 20,                        // direct hit damage
     fireInterval: 1500,
     aoeDamage: 12,                         // splash to nearby enemies
     aoeRadius: 90,
-    stunMs: 1500,                          // direct-hit target is frozen for 1.5s
+    stunMs: 500,                           // 0.5s base stun (tier scaling adds more)
     projectileSpeed: 0.9,                  // fast!
     homing: 0.55,                          // heavy homing blend per frame
     color: '#ffd0f5',
@@ -687,6 +687,143 @@ function drawStarShape(points, outer, inner) {
   ctx.stroke();
 }
 
+// Crystal Prism visual — evolves across tiers from a simple diamond
+// into a sharper "ethereal mythical" crystal with a realistic watching eye.
+// Dreamcore vibe: beautiful but unsettling.
+function drawCrystalPrismTiered(tw, t) {
+  const tier = tw.tier;
+  // Size and sharpness grow with tier — taller/thinner at T5
+  const size = 16 + tier * 4;                    // 20, 24, 28, 32, 36
+  const widthRatio = 0.68 - (tier - 1) * 0.055;  // 0.68 → 0.46
+  const rot = t * 0.0004;
+
+  // Outer aura — brighter each tier
+  drawGlow(0, 0, size * 2.4, '#b8f4ff', 0.18 + (tier - 1) * 0.05);
+  if (tier >= 4) drawGlow(0, 0, size * 3.6, '#6ad1ff', 0.10);
+
+  // Diamond body (rotates slowly)
+  ctx.save();
+  ctx.rotate(rot);
+  const grad = ctx.createLinearGradient(0, -size, 0, size);
+  // deeper colors at higher tiers — the crystal gets more "alive"
+  grad.addColorStop(0, tier >= 4 ? '#e4f8ff' : '#b8f4ff');
+  grad.addColorStop(1, tier >= 4 ? '#4aa5ff' : '#6ad1ff');
+  ctx.fillStyle = grad;
+  ctx.strokeStyle = tier === 5 ? '#ffffff' : '#b8f4ff';
+  ctx.lineWidth = 1.5 + (tier - 1) * 0.35;
+
+  ctx.beginPath();
+  ctx.moveTo(0, -size);
+  ctx.lineTo(size * widthRatio, 0);
+  ctx.lineTo(0, size);
+  ctx.lineTo(-size * widthRatio, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Inner facet highlight (gets brighter at higher tiers)
+  ctx.globalAlpha = 0.35 + (tier - 1) * 0.1;
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.moveTo(0, -size * 0.78);
+  ctx.lineTo(-size * widthRatio * 0.35, -size * 0.1);
+  ctx.lineTo(-size * widthRatio * 0.55, size * 0.35);
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  // The Eye — does NOT rotate with the diamond (keeps looking out).
+  // Appears gradually: T2 is a subtle slit, T5 is a realistic watching eye.
+  if (tier >= 2) {
+    const growth = (tier - 1) / 4;           // 0.25, 0.50, 0.75, 1.00
+    const eyeW = size * 0.46 * growth;
+    const eyeH = size * 0.24 * growth;
+
+    if (tier === 2) {
+      // just a faint vertical pupil slit — the hint of something alive
+      ctx.save();
+      ctx.globalAlpha = 0.75;
+      ctx.fillStyle = '#1a0a2a';
+      ctx.fillRect(-0.9, -eyeH, 1.8, eyeH * 2);
+      ctx.restore();
+    } else {
+      // Sclera (white of the eye) — slightly off-white for realism
+      ctx.save();
+      ctx.fillStyle = tier >= 5 ? '#f8efe0' : '#ede0ca';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, eyeW, eyeH, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(40, 10, 30, 0.8)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Iris — deep dreamy purple
+      const irisR = eyeH * 0.85;
+      ctx.fillStyle = tier >= 5 ? '#2a0d4f' : '#3a1f6a';
+      ctx.beginPath();
+      ctx.arc(0, 0, irisR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Iris detail ring
+      ctx.strokeStyle = '#9a6ad0';
+      ctx.lineWidth = 0.7;
+      ctx.beginPath();
+      ctx.arc(0, 0, irisR * 0.62, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Pupil — tracks the cursor for "it's watching you" effect
+      let px = 0, py = 0;
+      if (mouseInside) {
+        const dx = mouseX - tw.x;
+        const dy = mouseY - tw.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const maxOff = eyeH * 0.4;
+        px = (dx / len) * maxOff;
+        py = (dy / len) * maxOff;
+      }
+      ctx.fillStyle = '#000000';
+      ctx.beginPath();
+      ctx.arc(px, py, eyeH * 0.4, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Catchlight on the pupil (T4+) — the realism tell
+      if (tier >= 4) {
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(px - eyeH * 0.15, py - eyeH * 0.15, eyeH * 0.12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+
+      // T5: the unsettling details — veins and a subtle blood-red edge
+      if (tier === 5) {
+        ctx.strokeStyle = 'rgba(185, 40, 55, 0.7)';
+        ctx.lineWidth = 0.6;
+        ctx.beginPath();
+        ctx.moveTo(-eyeW * 0.95, -eyeH * 0.25);
+        ctx.quadraticCurveTo(-eyeW * 0.55, -eyeH * 0.05, -eyeW * 0.22, eyeH * 0.1);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(eyeW * 0.9, eyeH * 0.3);
+        ctx.quadraticCurveTo(eyeW * 0.5, eyeH * 0.4, eyeW * 0.15, eyeH * 0.2);
+        ctx.stroke();
+        // a slow, subtle pulse on the iris edge
+        const pulse = 0.4 + 0.3 * Math.sin(t * 0.003);
+        ctx.globalAlpha = pulse * 0.5;
+        ctx.strokeStyle = '#ff6a88';
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.arc(0, 0, irisR * 1.02, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      ctx.restore();
+    }
+  }
+}
+
 function drawTower(tw, t) {
   const type = TOWER_TYPES[tw.type];
   drawGlow(tw.x, tw.y, 44, type.color, 0.22);
@@ -696,16 +833,7 @@ function drawTower(tw, t) {
   ctx.lineWidth = 1.5;
 
   if (tw.type === 'prism') {
-    ctx.rotate(t * 0.0004);
-    const size = 18;
-    const grad = ctx.createLinearGradient(0, -size, 0, size);
-    grad.addColorStop(0, '#b8f4ff'); grad.addColorStop(1, '#6ad1ff');
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.moveTo(0, -size); ctx.lineTo(size * 0.65, 0);
-    ctx.lineTo(0, size);  ctx.lineTo(-size * 0.65, 0);
-    ctx.closePath();
-    ctx.fill(); ctx.stroke();
+    drawCrystalPrismTiered(tw, t);
 
   } else if (tw.type === 'lantern') {
     ctx.rotate(t * 0.0006);
