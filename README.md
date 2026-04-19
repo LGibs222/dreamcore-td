@@ -16,7 +16,7 @@ python -m http.server 8000
 
 ## Milestones
 
-See `_Index.md` for the full roadmap. Current: **M4 — towers shoot projectiles; enemies take damage and die.**
+See `_Index.md` for the full roadmap. Current: **M5 — waves, currency, win/lose states. A real game loop.**
 
 ## Stack
 

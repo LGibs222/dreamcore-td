@@ -1,4 +1,4 @@
-// Dreamcore TD — M4: towers shoot, enemies take damage and die.
+// Dreamcore TD — M5: waves + currency + win/lose states.
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -118,37 +118,122 @@ function drawOrb(x, y, radius) {
 
 // Enemies — Void Shards
 const enemies = [];
-let spawnTimer = 0;
-const SPAWN_INTERVAL_MS = 1400;
 
-function spawnEnemy() {
-  const maxHp = 30;
+function spawnEnemy(hpOverride, speedOverride) {
+  const maxHp = hpOverride ?? 30;
+  const baseSpeed = speedOverride ?? 0.00011;
   enemies.push({
     progress: 0,
-    speed: 0.00011 + Math.random() * 0.00005, // progress per ms
+    speed: baseSpeed + Math.random() * 0.00004,
     radius: 7 + Math.random() * 3,
     hp: maxHp,
     maxHp,
   });
 }
 
+// Game state — money, lives, waves, win/lose
+const GAME = {
+  money: 100,
+  lives: 10,
+  wave: 0,              // 0 before first wave starts
+  toSpawn: 0,           // enemies left to spawn in current wave
+  spawnTimer: 0,
+  spawnInterval: 1400,
+  restTimer: 3000,      // ms until next wave starts (counts down during rest)
+  status: 'rest',       // 'rest' | 'wave' | 'won' | 'lost'
+  waveHp: 30,
+  waveSpeed: 0.00011,
+};
+const TOWER_COST = 50;
+const KILL_REWARD = 10;
+const WAVES = [
+  { count: 8,  hp: 30,  speed: 0.00011, gap: 1400 },
+  { count: 10, hp: 40,  speed: 0.00012, gap: 1200 },
+  { count: 12, hp: 55,  speed: 0.00013, gap: 1100 },
+  { count: 14, hp: 75,  speed: 0.00014, gap: 1000 },
+  { count: 16, hp: 100, speed: 0.00015, gap: 900  },
+  { count: 20, hp: 140, speed: 0.00017, gap: 800  },
+];
+
+function startNextWave() {
+  if (GAME.wave >= WAVES.length) {
+    GAME.status = 'won';
+    return;
+  }
+  const w = WAVES[GAME.wave];
+  GAME.wave += 1;
+  GAME.toSpawn = w.count;
+  GAME.spawnInterval = w.gap;
+  GAME.spawnTimer = 0;
+  GAME.waveHp = w.hp;
+  GAME.waveSpeed = w.speed;
+  GAME.status = 'wave';
+}
+
+function updateWaves(dt) {
+  if (GAME.status === 'won' || GAME.status === 'lost') return;
+
+  if (GAME.status === 'rest') {
+    GAME.restTimer -= dt;
+    if (GAME.restTimer <= 0) startNextWave();
+    return;
+  }
+
+  // status === 'wave'
+  GAME.spawnTimer += dt;
+  while (GAME.toSpawn > 0 && GAME.spawnTimer >= GAME.spawnInterval) {
+    GAME.spawnTimer -= GAME.spawnInterval;
+    spawnEnemy(GAME.waveHp, GAME.waveSpeed);
+    GAME.toSpawn -= 1;
+  }
+
+  // wave ends when all spawns are out AND no enemies remain
+  if (GAME.toSpawn === 0 && enemies.length === 0) {
+    if (GAME.wave >= WAVES.length) {
+      GAME.status = 'won';
+    } else {
+      GAME.status = 'rest';
+      GAME.restTimer = 4000;
+    }
+  }
+}
+
+function resetGame() {
+  enemies.length = 0;
+  projectiles.length = 0;
+  particles.length = 0;
+  towers.length = 0;
+  GAME.money = 100;
+  GAME.lives = 10;
+  GAME.wave = 0;
+  GAME.toSpawn = 0;
+  GAME.spawnTimer = 0;
+  GAME.restTimer = 3000;
+  GAME.status = 'rest';
+}
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'r' || e.key === 'R') resetGame();
+});
+
 function enemyPos(e) { return pathPoint(e.progress); }
 
 function updateEnemies(dt) {
-  spawnTimer += dt;
-  while (spawnTimer >= SPAWN_INTERVAL_MS) {
-    spawnTimer -= SPAWN_INTERVAL_MS;
-    spawnEnemy();
-  }
   for (const e of enemies) e.progress += e.speed * dt;
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (e.hp <= 0) {
       const p = enemyPos(e);
       spawnDeathBurst(p.x, p.y);
+      GAME.money += KILL_REWARD;
       enemies.splice(i, 1);
     } else if (e.progress >= 1) {
+      GAME.lives -= 1;
       enemies.splice(i, 1);
+      if (GAME.lives <= 0) {
+        GAME.lives = 0;
+        GAME.status = 'lost';
+      }
     }
   }
 }
@@ -389,24 +474,88 @@ canvas.addEventListener('mousemove', (e) => {
 canvas.addEventListener('mouseleave', () => { mouseInside = false; });
 
 canvas.addEventListener('click', (e) => {
+  if (GAME.status === 'won' || GAME.status === 'lost') return;
   const rect = canvas.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const y = e.clientY - rect.top;
   if (placementError(x, y)) return;
+  if (GAME.money < TOWER_COST) return; // can't afford
+  GAME.money -= TOWER_COST;
   towers.push({ x, y, fireCooldown: 0 });
 });
 
 function drawPlacementHint() {
   if (!mouseInside) return;
+  if (GAME.status === 'won' || GAME.status === 'lost') return;
   const err = placementError(mouseX, mouseY);
+  const broke = GAME.money < TOWER_COST;
+  const bad = err || broke;
   ctx.save();
-  ctx.globalAlpha = err ? 0.4 : 0.8;
-  ctx.strokeStyle = err ? '#ff7aa2' : COLORS.hint;
+  ctx.globalAlpha = bad ? 0.4 : 0.8;
+  ctx.strokeStyle = bad ? '#ff7aa2' : COLORS.hint;
   ctx.lineWidth = 1.5;
   ctx.setLineDash([4, 6]);
   ctx.beginPath();
   ctx.arc(mouseX, mouseY, 22, 0, Math.PI * 2);
   ctx.stroke();
+  ctx.restore();
+}
+
+function drawHUD() {
+  ctx.save();
+  ctx.font = '14px system-ui, sans-serif';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = '#cfd0ff';
+  ctx.globalAlpha = 0.92;
+
+  // top-right panel: money, lives, wave
+  const lines = [
+    `✦  ${GAME.money}`,
+    `♡  ${GAME.lives}`,
+    `Wave  ${GAME.wave} / ${WAVES.length}`,
+  ];
+  const pad = 16;
+  let x = canvas.width - pad;
+  let y = pad;
+  ctx.textAlign = 'right';
+  for (const line of lines) {
+    ctx.fillText(line, x, y);
+    y += 20;
+  }
+
+  // status strip (center-top, smaller)
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#b8f4ff';
+  if (GAME.status === 'rest') {
+    const s = Math.max(0, Math.ceil(GAME.restTimer / 1000));
+    const label = GAME.wave === 0 ? 'First wave in' : `Wave ${GAME.wave + 1} in`;
+    ctx.fillText(`${label}  ${s}`, canvas.width / 2, 14);
+  } else if (GAME.status === 'wave') {
+    ctx.fillText(`Wave ${GAME.wave} — ${GAME.toSpawn + enemies.length} remaining`, canvas.width / 2, 14);
+  }
+
+  // cost hint on bottom-left
+  ctx.textAlign = 'left';
+  ctx.globalAlpha = 0.6;
+  ctx.fillStyle = '#cfd0ff';
+  ctx.fillText(`Click to place a Crystal Prism  ·  Cost ${TOWER_COST}  ·  Press R to restart`, pad, canvas.height - 26);
+
+  // win / lose banner
+  if (GAME.status === 'won' || GAME.status === 'lost') {
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = 'rgba(10,10,31,0.7)';
+    ctx.fillRect(0, canvas.height / 2 - 70, canvas.width, 140);
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 44px system-ui, sans-serif';
+    ctx.fillStyle = GAME.status === 'won' ? '#b8f4ff' : '#ff9ad6';
+    ctx.fillText(
+      GAME.status === 'won' ? 'Dreamcore Cleared' : 'The Star Fades',
+      canvas.width / 2, canvas.height / 2 - 30
+    );
+    ctx.font = '16px system-ui, sans-serif';
+    ctx.fillStyle = '#cfd0ff';
+    ctx.fillText('Press R to restart', canvas.width / 2, canvas.height / 2 + 20);
+  }
   ctx.restore();
 }
 
@@ -420,6 +569,7 @@ function loop(t) {
   drawStars(t);
   drawPath();
 
+  updateWaves(dt);
   updateEnemies(dt);
   updateTowers(dt);
   updateProjectiles(dt);
@@ -437,6 +587,8 @@ function loop(t) {
   const cy = canvas.height / 2;
   const pulse = 26 + Math.sin(t * 0.002) * 4;
   drawOrb(cx, cy, pulse);
+
+  drawHUD();
 
   requestAnimationFrame(loop);
 }
