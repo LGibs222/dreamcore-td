@@ -16,7 +16,7 @@ python -m http.server 8000
 
 ## Milestones
 
-See `_Index.md` for the full roadmap. Current: **M6 — all 6 towers: Crystal Prism, Star Lantern, Memory Beacon, Watcher, Amplifier, Supernova Burst.**
+See `_Index.md` for the full roadmap. Current: **M7 — upgrade UI + 5-tier system for all 6 towers (T5 signatures for Prism + Supernova).**
 
 ## Stack
 

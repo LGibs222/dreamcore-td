@@ -1,5 +1,5 @@
-// Dreamcore TD — M6: all 6 towers at base stats.
-// (Aura stacking rules = M8, Supernova visual polish = M9, upgrades = M7.)
+// Dreamcore TD — M7: 5-tier upgrade system for all 6 towers.
+// (Aura stacking rules = M8, dreamcore polish = M10.)
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -205,6 +205,7 @@ function resetGame() {
   particles.length = 0;
   blasts.length = 0;
   towers.length = 0;
+  selectedTower = null;
   GAME.money = 100;
   GAME.lives = 10;
   GAME.wave = 0;
@@ -216,6 +217,8 @@ function resetGame() {
 
 window.addEventListener('keydown', (e) => {
   if (e.key === 'r' || e.key === 'R') { resetGame(); return; }
+  if (e.key === 'Escape') { selectedTower = null; return; }
+  if (e.key === 'u' || e.key === 'U') { if (selectedTower) tryUpgrade(selectedTower); return; }
   const idx = parseInt(e.key, 10);
   if (idx >= 1 && idx <= TYPE_KEYS.length) selectedType = TYPE_KEYS[idx - 1];
 });
@@ -332,25 +335,80 @@ const TOWER_TYPES = {
 const TYPE_KEYS = Object.keys(TOWER_TYPES);
 let selectedType = 'prism';
 
-// Compute each tower's effective range/damage based on nearby aura towers.
-// M6 rule: aura effects of the same type stack multiplicatively.
-// (M8 will refine: only highest-tier aura per type applies; L5 synergy doubles radius.)
+// Upgrade tiers — cumulative stat multipliers (index by tier 1-5)
+const TIER_MULT        = [null, 1.00, 1.30, 1.65, 2.10, 2.75];
+// Cost to REACH a tier (as fraction of base cost). Tier 1 is free (placement).
+const UPGRADE_COST_FRAC = [null, 0, 0.5, 0.9, 1.4, 2.2];
+const SELL_FRACTION = 0.7;
+let selectedTower = null;  // reference to a placed tower object (or null)
+
+function upgradeCost(tw) {
+  if (tw.tier >= 5) return null;
+  const type = TOWER_TYPES[tw.type];
+  return Math.ceil(type.cost * UPGRADE_COST_FRAC[tw.tier + 1]);
+}
+function sellValue(tw) {
+  return Math.floor((tw.totalSpent || TOWER_TYPES[tw.type].cost) * SELL_FRACTION);
+}
+function tryUpgrade(tw) {
+  const cost = upgradeCost(tw);
+  if (cost == null || GAME.money < cost) return;
+  GAME.money -= cost;
+  tw.totalSpent = (tw.totalSpent || 0) + cost;
+  tw.tier += 1;
+}
+function sellTower(tw) {
+  GAME.money += sellValue(tw);
+  const idx = towers.indexOf(tw);
+  if (idx >= 0) towers.splice(idx, 1);
+  if (selectedTower === tw) selectedTower = null;
+}
+
+function pointInRect(x, y, r) {
+  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+}
+function panelGeometry(tw) {
+  const panelW = 240, panelH = 132;
+  const px = tw.x + 30;
+  const py = tw.y - 60;
+  const x = Math.min(canvas.width - panelW - 12, Math.max(12, px));
+  const y = Math.min(canvas.height - panelH - 90, Math.max(12, py));  // stay above the tower palette
+  return {
+    x, y, panelW, panelH,
+    upgradeRect: { x: x + 12,            y: y + panelH - 34, w: 104, h: 24 },
+    sellRect:    { x: x + panelW - 116,  y: y + panelH - 34, w: 104, h: 24 },
+  };
+}
+
+// Compute tier-scaled "self" stats per tower, then apply aura bonuses from neighbors.
 function computeTowerEffectives() {
+  // Pass 1: tier-scaled self stats
   for (const tw of towers) {
     const t = TOWER_TYPES[tw.type];
-    let range  = t.baseRange  ?? 0;
-    let damage = t.baseDamage ?? 0;
+    const m = TIER_MULT[tw.tier];
+    tw.selfRange        = (t.baseRange  ?? 0) * m;
+    tw.selfDamage       = (t.baseDamage ?? 0) * m;
+    tw.selfTickDamage   = t.tickDamage   ? t.tickDamage * m : 0;
+    tw.selfAoeDamage    = t.aoeDamage    ? t.aoeDamage * m : 0;
+    tw.selfAoeRadius    = t.aoeRadius    ? t.aoeRadius * (1 + (m - 1) * 0.3) : 0;
+    tw.selfStunMs       = t.stunMs       ? t.stunMs + (m - 1) * 500 : 0;
+    tw.selfSlowMult     = t.slowMult     ? Math.max(0.08, t.slowMult - (m - 1) * 0.08) : 1;
+    tw.selfAuraMult     = t.auraMult     ? 1 + (t.auraMult - 1) * m : 1;
+    tw.selfFireInterval = t.fireInterval ? Math.max(150, t.fireInterval / (1 + (m - 1) * 0.25)) : 0;
+  }
+  // Pass 2: aura bonuses on range/damage from nearby aura towers
+  for (const tw of towers) {
+    tw.effectiveRange  = tw.selfRange;
+    tw.effectiveDamage = tw.selfDamage;
     for (const other of towers) {
       if (other === tw) continue;
       const ot = TOWER_TYPES[other.type];
       if (ot.behavior !== 'aura') continue;
       const d = Math.hypot(other.x - tw.x, other.y - tw.y);
-      if (d > ot.baseRange) continue;
-      if (ot.auraType === 'range')  range  *= ot.auraMult;
-      if (ot.auraType === 'damage') damage *= ot.auraMult;
+      if (d > other.selfRange) continue;
+      if (ot.auraType === 'range')  tw.effectiveRange  *= other.selfAuraMult;
+      if (ot.auraType === 'damage') tw.effectiveDamage *= other.selfAuraMult;
     }
-    tw.effectiveRange  = range;
-    tw.effectiveDamage = damage;
   }
 }
 
@@ -378,17 +436,21 @@ function updateTowers(dt) {
       const target = findTargetInRange(tw, tw.effectiveRange);
       if (!target) continue;
       const p = enemyPos(target);
-      const dx = p.x - tw.x, dy = p.y - tw.y;
-      const len = Math.hypot(dx, dy) || 1;
-      projectiles.push({
-        x: tw.x, y: tw.y,
-        vx: (dx / len) * PROJECTILE_SPEED,
-        vy: (dy / len) * PROJECTILE_SPEED,
-        damage: tw.effectiveDamage,
-        target,
-        color: t.color,
-      });
-      tw.fireCooldown = t.fireInterval;
+      const baseAngle = Math.atan2(p.y - tw.y, p.x - tw.x);
+      // Prism T5 signature: prism-split — fire 3 shots in a cone
+      const offsets = (tw.type === 'prism' && tw.tier === 5) ? [-0.20, 0, 0.20] : [0];
+      for (const off of offsets) {
+        const a = baseAngle + off;
+        projectiles.push({
+          x: tw.x, y: tw.y,
+          vx: Math.cos(a) * PROJECTILE_SPEED,
+          vy: Math.sin(a) * PROJECTILE_SPEED,
+          damage: tw.effectiveDamage,
+          target: off === 0 ? target : null, // only the center shot homes
+          color: t.color,
+        });
+      }
+      tw.fireCooldown = tw.selfFireInterval;
 
     } else if (t.behavior === 'shoot-explode') {
       if (tw.fireCooldown > 0) continue;
@@ -404,29 +466,42 @@ function updateTowers(dt) {
         speed: t.projectileSpeed,
         homing: t.homing,
         damage: tw.effectiveDamage,
-        aoeDamage: t.aoeDamage,
-        aoeRadius: t.aoeRadius,
-        stunMs: t.stunMs,
+        aoeDamage: tw.selfAoeDamage,
+        aoeRadius: tw.selfAoeRadius,
+        stunMs: tw.selfStunMs,
         target,
         color: t.color,
         kind: 'explode',
         rotation: 0,
+        // Supernova T5 signature: on explosion, chain-blast the nearest surviving enemy
+        chain: tw.tier === 5,
       });
-      tw.fireCooldown = t.fireInterval;
+      tw.fireCooldown = tw.selfFireInterval;
 
     } else if (t.behavior === 'dot') {
       tw.tickTimer = (tw.tickTimer || 0) - dt;
       if (tw.tickTimer > 0) continue;
       for (const e of enemies) {
         const p = enemyPos(e);
-        if (Math.hypot(p.x - tw.x, p.y - tw.y) <= tw.effectiveRange) {
-          e.hp -= t.tickDamage;
+        if (Math.hypot(p.x - tw.x, p.y - tw.y) <= tw.selfRange) {
+          e.hp -= tw.selfTickDamage;
         }
       }
       tw.tickTimer = t.tickInterval;
     }
     // 'slow' and 'aura' are passive — resolved in slowMultiplierFor / computeTowerEffectives
   }
+}
+
+function findNearestEnemyWithin(x, y, radius, except) {
+  let best = null, bestD = radius;
+  for (const e of enemies) {
+    if (e === except) continue;
+    const p = enemyPos(e);
+    const d = Math.hypot(p.x - x, p.y - y);
+    if (d < bestD) { best = e; bestD = d; }
+  }
+  return best;
 }
 
 // Slow from overlapping Star Lanterns — takes the strongest (smallest mult).
@@ -436,8 +511,8 @@ function slowMultiplierFor(e) {
   for (const tw of towers) {
     const t = TOWER_TYPES[tw.type];
     if (t.behavior !== 'slow') continue;
-    if (Math.hypot(p.x - tw.x, p.y - tw.y) <= tw.effectiveRange) {
-      mult = Math.min(mult, t.slowMult);
+    if (Math.hypot(p.x - tw.x, p.y - tw.y) <= tw.selfRange) {
+      mult = Math.min(mult, tw.selfSlowMult);
     }
   }
   return mult;
@@ -475,10 +550,8 @@ function updateProjectiles(dt) {
 
     if (hitEnemy) {
       if (pr.kind === 'explode') {
-        // direct hit: damage + stun
         hitEnemy.hp -= pr.damage;
         hitEnemy.stunTimer = Math.max(hitEnemy.stunTimer || 0, pr.stunMs);
-        // splash to all other enemies within aoeRadius of impact point
         for (const e of enemies) {
           if (e === hitEnemy) continue;
           const p = enemyPos(e);
@@ -486,13 +559,27 @@ function updateProjectiles(dt) {
             e.hp -= pr.aoeDamage;
           }
         }
-        // expanding ring visual
         blasts.push({
           x: pr.x, y: pr.y,
           radius: 0, maxRadius: pr.aoeRadius,
           life: 420, maxLife: 420,
           color: pr.color,
         });
+        // Supernova T5 chain: hop once to the nearest surviving enemy within 150px
+        if (pr.chain) {
+          const chainT = findNearestEnemyWithin(pr.x, pr.y, 150, hitEnemy);
+          if (chainT) {
+            const cp = enemyPos(chainT);
+            chainT.hp -= pr.aoeDamage * 1.5;
+            chainT.stunTimer = Math.max(chainT.stunTimer || 0, pr.stunMs * 0.6);
+            blasts.push({
+              x: cp.x, y: cp.y,
+              radius: 0, maxRadius: pr.aoeRadius * 0.7,
+              life: 360, maxLife: 360,
+              color: pr.color,
+            });
+          }
+        }
       } else {
         hitEnemy.hp -= pr.damage;
       }
@@ -677,11 +764,151 @@ function drawTowers(t) {
     ctx.globalAlpha = 0.08;
     ctx.fillStyle = type.color;
     ctx.beginPath();
-    ctx.arc(tw.x, tw.y, type.baseRange, 0, Math.PI * 2);
+    ctx.arc(tw.x, tw.y, tw.selfRange, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
   for (const tw of towers) drawTower(tw, t);
+  // tier pips — 5 small dots below each tower
+  for (const tw of towers) drawTierPips(tw);
+  // selection highlight + effective range for the selected tower
+  if (selectedTower) {
+    const sel = selectedTower;
+    const type = TOWER_TYPES[sel.type];
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.arc(sel.x, sel.y, 26, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 0.3;
+    ctx.strokeStyle = type.color;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 6]);
+    ctx.beginPath();
+    ctx.arc(sel.x, sel.y, sel.effectiveRange || sel.selfRange, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawTierPips(tw) {
+  const type = TOWER_TYPES[tw.type];
+  const pipR = 2.2;
+  const gap = 7;
+  const totalW = gap * 4;
+  const y = tw.y + 26;
+  const x0 = tw.x - totalW / 2;
+  ctx.save();
+  for (let i = 0; i < 5; i++) {
+    const filled = i < tw.tier;
+    ctx.globalAlpha = filled ? 1 : 0.3;
+    ctx.fillStyle = filled ? type.color : '#6a6a8a';
+    ctx.beginPath();
+    ctx.arc(x0 + i * gap, y, pipR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawUpgradePanel() {
+  if (!selectedTower) return;
+  const tw = selectedTower;
+  const type = TOWER_TYPES[tw.type];
+  const g = panelGeometry(tw);
+  const { x, y, panelW, panelH } = g;
+
+  ctx.save();
+  // panel bg
+  ctx.globalAlpha = 0.92;
+  ctx.fillStyle = 'rgba(10,10,31,0.92)';
+  ctx.fillRect(x, y, panelW, panelH);
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = type.color;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x + 0.5, y + 0.5, panelW - 1, panelH - 1);
+
+  // title + tier
+  ctx.font = 'bold 14px system-ui';
+  ctx.fillStyle = type.color;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText(type.name, x + 12, y + 10);
+
+  ctx.font = '12px system-ui';
+  ctx.fillStyle = '#cfd0ff';
+  const pips = '●'.repeat(tw.tier) + '○'.repeat(5 - tw.tier);
+  ctx.fillText(`Tier ${tw.tier} / 5   ${pips}`, x + 12, y + 30);
+
+  // stats — show the ones that matter for this behavior
+  ctx.font = '11px system-ui';
+  ctx.fillStyle = '#a8b0d8';
+  let sy = y + 50;
+  const stat = (label, val) => { ctx.fillText(`${label}  ${val}`, x + 12, sy); sy += 14; };
+
+  if (type.behavior === 'shoot') {
+    stat('Damage',  Math.round(tw.effectiveDamage));
+    stat('Range',   Math.round(tw.effectiveRange));
+    stat('Fire rate', `${(1000 / tw.selfFireInterval).toFixed(1)}/s`);
+  } else if (type.behavior === 'shoot-explode') {
+    stat('Direct',  Math.round(tw.effectiveDamage));
+    stat('Splash',  `${Math.round(tw.selfAoeDamage)} in ${Math.round(tw.selfAoeRadius)}px`);
+    stat('Stun',    `${(tw.selfStunMs / 1000).toFixed(1)}s`);
+  } else if (type.behavior === 'dot') {
+    stat('Per tick', Math.round(tw.selfTickDamage));
+    stat('Range',    Math.round(tw.selfRange));
+  } else if (type.behavior === 'slow') {
+    stat('Slow to', `${Math.round(tw.selfSlowMult * 100)}%`);
+    stat('Range',   Math.round(tw.selfRange));
+  } else if (type.behavior === 'aura') {
+    const pct = Math.round((tw.selfAuraMult - 1) * 100);
+    stat(type.auraType === 'range' ? 'Range aura' : 'Damage aura', `+${pct}%`);
+    stat('Aura radius', Math.round(tw.selfRange));
+  }
+
+  // T5 signature text
+  if (tw.tier === 5) {
+    const sig = T5_TEXT[tw.type];
+    if (sig) {
+      ctx.fillStyle = type.color;
+      ctx.fillText(`✦ ${sig}`, x + 12, sy);
+    }
+  }
+
+  // buttons
+  const up = upgradeCost(tw);
+  const sell = sellValue(tw);
+  drawPanelButton(g.upgradeRect, up == null ? 'MAX' : `Upgrade  ✦${up}`, up == null || GAME.money < up, type.color);
+  drawPanelButton(g.sellRect, `Sell  ✦${sell}`, false, '#ff9ac2');
+
+  ctx.restore();
+}
+
+const T5_TEXT = {
+  prism:     'Prism-split: fires 3 shots',
+  supernova: 'Chain-blast on explosion',
+  lantern:   'Deeper slow',
+  beacon:    'Ticks harder',
+  watcher:   'Massive range aura',
+  amplifier: 'Massive damage aura',
+};
+
+function drawPanelButton(r, label, disabled, color) {
+  ctx.save();
+  ctx.globalAlpha = disabled ? 0.35 : 1;
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '12px system-ui';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2);
+  ctx.restore();
 }
 
 function drawTowerRanges() {
@@ -751,16 +978,40 @@ canvas.addEventListener('click', (e) => {
   const x = e.clientX - rect.left;
   const y = e.clientY - rect.top;
 
-  // palette click → switch selected tower (works even in win/lose so you can eyeball)
+  // Upgrade panel (if open) — buttons first, then outside-click deselects
+  if (selectedTower) {
+    const g = panelGeometry(selectedTower);
+    if (pointInRect(x, y, g.upgradeRect)) { tryUpgrade(selectedTower); return; }
+    if (pointInRect(x, y, g.sellRect))    { sellTower(selectedTower);  return; }
+    const insidePanel = x >= g.x && x <= g.x + g.panelW && y >= g.y && y <= g.y + g.panelH;
+    if (insidePanel) return;       // click inside panel but not on a button — ignore
+    selectedTower = null;           // click outside panel — deselect, fall through
+  }
+
+  // Palette click switches the tower-to-place
   const paletteKey = paletteCellAt(x, y);
   if (paletteKey) { selectedType = paletteKey; return; }
 
   if (GAME.status === 'won' || GAME.status === 'lost') return;
+
+  // Click on an existing tower → open its upgrade panel
+  for (const tw of towers) {
+    if (Math.hypot(x - tw.x, y - tw.y) < 22) { selectedTower = tw; return; }
+  }
+
+  // Otherwise try to place a new tower
   if (placementError(x, y)) return;
   const type = TOWER_TYPES[selectedType];
   if (GAME.money < type.cost) return;
   GAME.money -= type.cost;
-  towers.push({ x, y, type: selectedType, fireCooldown: 0, tickTimer: 0 });
+  towers.push({
+    x, y,
+    type: selectedType,
+    tier: 1,
+    totalSpent: type.cost,
+    fireCooldown: 0,
+    tickTimer: 0,
+  });
 });
 
 function drawPlacementHint() {
@@ -867,10 +1118,12 @@ function drawHUD() {
   ctx.textAlign = 'left';
   ctx.globalAlpha = 0.6;
   ctx.fillStyle = '#cfd0ff';
-  ctx.fillText(`Keys 1–6 pick a tower · Click to place · Press R to restart`, pad, 18);
+  ctx.fillText(`Keys 1–6 pick a tower · Click tower to upgrade (U) or sell · ESC closes · R restarts`, pad, 18);
 
   // tower palette — 6 cells along the bottom
   drawTowerPalette();
+  // upgrade panel for the selected placed tower
+  drawUpgradePanel();
 
   // win / lose banner
   if (GAME.status === 'won' || GAME.status === 'lost') {
