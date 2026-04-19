@@ -16,7 +16,7 @@ python -m http.server 8000
 
 ## Milestones
 
-See `_Index.md` for the full roadmap. Current: **M3 — click to place a Crystal Prism tower (no shooting yet).**
+See `_Index.md` for the full roadmap. Current: **M4 — towers shoot projectiles; enemies take damage and die.**
 
 ## Stack
 
