@@ -16,7 +16,7 @@ python -m http.server 8000
 
 ## Milestones
 
-See `_Index.md` for the full roadmap. Current: **M1 — glowing orb drifts on a dark canvas.**
+See `_Index.md` for the full roadmap. Current: **M2 — enemies follow a spiral path toward the center star.**
 
 ## Stack
 

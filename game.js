@@ -1,22 +1,25 @@
-// Dreamcore TD — M1: glowing orb drifts on a dark canvas
-// Teaching notes (Xavier):
-//   - requestAnimationFrame = "call me on the next frame, ~60 times a second"
-//   - We clear the canvas each frame, then redraw everything in its new position
-//   - Math.sin(time) gives a smooth wave between -1 and 1 — perfect for drifting
+// Dreamcore TD — M2: enemies follow a dreamcore spiral toward the center star
+// The orb from M1 is now the "Forgotten Star" — the thing enemies are marching toward.
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 
-// Dreamcore palette
 const COLORS = {
-  bgDeep:   '#0a0a1f',
-  bgGlow:   '#1a1040',
-  orbCore:  '#ffd6f5',
-  orbMid:   '#c9a6ff',
-  orbOuter: '#6ad1ff',
+  bgDeep:    '#0a0a1f',
+  bgGlow:    '#1a1040',
+  orbCore:   '#ffd6f5',
+  orbMid:    '#c9a6ff',
+  orbOuter:  '#6ad1ff',
+  path:      'rgba(201, 166, 255, 0.5)',
+  enemyCore: '#ff9ad6',
+  enemyMid:  '#c2a0ff',
 };
 
-// Resize the canvas to fill the window (and handle window resizes)
+const PATH = {
+  turns: 3,       // spiral loops from edge to center
+  samples: 400,   // resolution for drawing the visible line
+};
+
 function resize() {
   canvas.width  = window.innerWidth;
   canvas.height = window.innerHeight;
@@ -24,7 +27,6 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-// Starfield — a cheap sense of space
 const stars = [];
 function makeStars() {
   stars.length = 0;
@@ -41,7 +43,19 @@ function makeStars() {
 makeStars();
 window.addEventListener('resize', makeStars);
 
-// Draw a radial-gradient background so the center glows softly
+// progress 0 = outside of spiral, progress 1 = center star
+function pathPoint(progress) {
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  const maxR = Math.min(canvas.width, canvas.height) * 0.45;
+  const angle  = progress * Math.PI * 2 * PATH.turns;
+  const radius = maxR * (1 - progress);
+  return {
+    x: cx + Math.cos(angle) * radius,
+    y: cy + Math.sin(angle) * radius,
+  };
+}
+
 function drawBackground() {
   const grad = ctx.createRadialGradient(
     canvas.width / 2, canvas.height / 2, 0,
@@ -65,39 +79,87 @@ function drawStars(t) {
   ctx.globalAlpha = 1;
 }
 
-// A glowing orb — three stacked radial gradients for soft bloom
-function drawOrb(x, y, radius) {
-  const layers = [
-    { r: radius * 4.0, color: COLORS.orbOuter, alpha: 0.15 },
-    { r: radius * 2.2, color: COLORS.orbMid,   alpha: 0.35 },
-    { r: radius * 1.0, color: COLORS.orbCore,  alpha: 1.00 },
-  ];
-  for (const layer of layers) {
-    const grad = ctx.createRadialGradient(x, y, 0, x, y, layer.r);
-    grad.addColorStop(0, layer.color);
-    grad.addColorStop(1, 'rgba(10,10,31,0)');
-    ctx.globalAlpha = layer.alpha;
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(x, y, layer.r, 0, Math.PI * 2);
-    ctx.fill();
+function drawPath() {
+  ctx.strokeStyle = COLORS.path;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i <= PATH.samples; i++) {
+    const p = pathPoint(i / PATH.samples);
+    if (i === 0) ctx.moveTo(p.x, p.y);
+    else         ctx.lineTo(p.x, p.y);
   }
+  ctx.stroke();
+}
+
+function drawGlow(x, y, radius, coreColor, outerAlpha) {
+  const grad = ctx.createRadialGradient(x, y, 0, x, y, radius);
+  grad.addColorStop(0, coreColor);
+  grad.addColorStop(1, 'rgba(10,10,31,0)');
+  ctx.globalAlpha = outerAlpha;
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fill();
   ctx.globalAlpha = 1;
 }
 
-// The main loop — runs ~60x per second
+function drawOrb(x, y, radius) {
+  drawGlow(x, y, radius * 4.0, COLORS.orbOuter, 0.15);
+  drawGlow(x, y, radius * 2.2, COLORS.orbMid,   0.35);
+  drawGlow(x, y, radius * 1.0, COLORS.orbCore,  1.00);
+}
+
+// Enemies — Void Shards
+const enemies = [];
+let spawnTimer = 0;
+const SPAWN_INTERVAL_MS = 1400;
+
+function spawnEnemy() {
+  enemies.push({
+    progress: 0,
+    speed: 0.00011 + Math.random() * 0.00005, // progress per ms
+    radius: 7 + Math.random() * 3,
+  });
+}
+
+function updateEnemies(dt) {
+  spawnTimer += dt;
+  while (spawnTimer >= SPAWN_INTERVAL_MS) {
+    spawnTimer -= SPAWN_INTERVAL_MS;
+    spawnEnemy();
+  }
+  for (const e of enemies) e.progress += e.speed * dt;
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    if (enemies[i].progress >= 1) enemies.splice(i, 1);
+  }
+}
+
+function drawEnemies() {
+  for (const e of enemies) {
+    const p = pathPoint(e.progress);
+    drawGlow(p.x, p.y, e.radius * 3, COLORS.enemyMid,  0.35);
+    drawGlow(p.x, p.y, e.radius,     COLORS.enemyCore, 1.00);
+  }
+}
+
+// Main loop with delta time — keeps motion framerate-independent
+let lastT = 0;
 function loop(t) {
+  const dt = Math.min(t - lastT, 64); // clamp so tab-switches don't teleport enemies
+  lastT = t;
+
   drawBackground();
   drawStars(t);
+  drawPath();
 
-  // Orb drifts in a slow Lissajous figure around the center
-  const cx = canvas.width  / 2;
+  updateEnemies(dt);
+  drawEnemies();
+
+  // Center star — the thing enemies are trying to reach
+  const cx = canvas.width / 2;
   const cy = canvas.height / 2;
-  const driftX = Math.sin(t * 0.0004) * 140;
-  const driftY = Math.cos(t * 0.0003) * 90;
-  const pulse  = 22 + Math.sin(t * 0.002) * 4; // gentle radius pulse
-
-  drawOrb(cx + driftX, cy + driftY, pulse);
+  const pulse = 26 + Math.sin(t * 0.002) * 4;
+  drawOrb(cx, cy, pulse);
 
   requestAnimationFrame(loop);
 }
