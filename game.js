@@ -126,9 +126,11 @@ function drawOrb(x, y, radius) {
 
 // Enemies — Void Shards
 const enemies = [];
+// Global enemy-HP multiplier — makes them tougher without reshuffling wave data.
+const ENEMY_HP_MULT = 1.15;
 
 function spawnEnemy(hpOverride, speedOverride) {
-  const maxHp = hpOverride ?? 30;
+  const maxHp = Math.round((hpOverride ?? 30) * ENEMY_HP_MULT);
   const baseSpeed = speedOverride ?? 0.000075;
   enemies.push({
     progress: 0,
@@ -810,106 +812,192 @@ function drawCrystalPrismTiered(tw, t) {
 
     ctx.save();
 
-    // Sclera with top-shadow gradient — the "eyelid" dimension
-    const scleraGrad = ctx.createLinearGradient(0, -eyeH, 0, eyeH);
-    scleraGrad.addColorStop(0, '#c8b9a0');     // darker up top (lid shadow)
-    scleraGrad.addColorStop(0.4, '#f2e4ca');
-    scleraGrad.addColorStop(1,   '#ede0ca');
-    ctx.fillStyle = scleraGrad;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, eyeW, eyeH, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(40, 10, 30, 0.85)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
-    // Subtle vein network on the sclera — gets denser with tier
-    ctx.strokeStyle = 'rgba(165, 30, 55, 0.55)';
-    ctx.lineWidth = 0.5;
-    const veins = Math.max(0, tier - 2);       // 1,2,3 veins for T3,T4,T5
-    for (let i = 0; i < veins; i++) {
-      const sign = i % 2 === 0 ? -1 : 1;
-      const yOff = (i / veins - 0.5) * eyeH * 1.2;
+    // Almond-shaped eye path — not a perfect ellipse. Upper lid arcs higher;
+    // lower lid is flatter. Inner corner (-eyeW, 0) and outer (eyeW, 0).
+    function eyePath() {
       ctx.beginPath();
-      ctx.moveTo(sign * eyeW * 0.92, yOff);
-      ctx.quadraticCurveTo(sign * eyeW * 0.5, yOff * 0.7, sign * eyeW * 0.2, yOff * 0.3);
+      ctx.moveTo(-eyeW, 0);
+      ctx.bezierCurveTo(-eyeW * 0.55, -eyeH * 1.25, eyeW * 0.55, -eyeH * 1.25, eyeW, 0);
+      ctx.bezierCurveTo(eyeW * 0.55, eyeH * 0.95, -eyeW * 0.55, eyeH * 0.95, -eyeW, 0);
+      ctx.closePath();
+    }
+
+    // 1) Sclera with top-lid shadow + bottom gradient for spherical feel
+    const scleraGrad = ctx.createLinearGradient(0, -eyeH, 0, eyeH);
+    scleraGrad.addColorStop(0,   '#b5a68d');      // lid shadow up top
+    scleraGrad.addColorStop(0.3, '#e8d8bc');
+    scleraGrad.addColorStop(0.7, '#f2e4ca');
+    scleraGrad.addColorStop(1,   '#d9c9b0');      // slight bottom shadow
+    ctx.fillStyle = scleraGrad;
+    eyePath();
+    ctx.fill();
+
+    // 2) Clip everything that follows inside the almond
+    ctx.save();
+    eyePath();
+    ctx.clip();
+
+    // 2a) Deeper upper-lid shadow — adds sphere depth
+    const lidGrad = ctx.createLinearGradient(0, -eyeH, 0, -eyeH * 0.2);
+    lidGrad.addColorStop(0, 'rgba(40, 20, 40, 0.55)');
+    lidGrad.addColorStop(1, 'rgba(40, 20, 40, 0)');
+    ctx.fillStyle = lidGrad;
+    ctx.fillRect(-eyeW, -eyeH * 1.2, eyeW * 2, eyeH * 1.2);
+
+    // 2b) Vein network — denser with tier, irregular bezier paths
+    ctx.strokeStyle = 'rgba(155, 30, 50, 0.55)';
+    ctx.lineWidth = 0.5;
+    const veins = Math.max(0, tier - 2);
+    for (let i = 0; i < veins * 2; i++) {
+      const sign = i % 2 === 0 ? -1 : 1;
+      const yOff = ((i * 19) % 11 / 10 - 0.5) * eyeH * 1.2;
+      ctx.beginPath();
+      ctx.moveTo(sign * eyeW * 0.95, yOff);
+      ctx.bezierCurveTo(
+        sign * eyeW * 0.6,  yOff * 0.8 + eyeH * 0.05,
+        sign * eyeW * 0.35, yOff * 0.5,
+        sign * eyeW * 0.18, yOff * 0.2
+      );
       ctx.stroke();
     }
 
-    // Iris — deep violet with radial striations (realism detail)
+    // 3) Iris — deep violet with radial gradient + striations + crypts
     const irisR = eyeH * 0.88;
-    const irisGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, irisR);
-    irisGrad.addColorStop(0, '#3a1f6a');
-    irisGrad.addColorStop(0.7, '#1a0a4a');
-    irisGrad.addColorStop(1, '#0a0420');
+    const irisGrad = ctx.createRadialGradient(0, 0, irisR * 0.1, 0, 0, irisR);
+    irisGrad.addColorStop(0,   '#4d2a7a');
+    irisGrad.addColorStop(0.55,'#271257');
+    irisGrad.addColorStop(0.9, '#140635');
+    irisGrad.addColorStop(1,   '#070116');
     ctx.fillStyle = irisGrad;
     ctx.beginPath();
     ctx.arc(0, 0, irisR, 0, Math.PI * 2);
     ctx.fill();
 
-    // Radial iris striations — many thin lines from near pupil outward
-    ctx.strokeStyle = 'rgba(160, 120, 220, 0.5)';
+    // Iris striations — stable per-tower pseudo-random lengths
+    ctx.strokeStyle = 'rgba(175, 135, 235, 0.55)';
     ctx.lineWidth = 0.45;
-    const striations = 32;
+    const striations = 40;
+    const seed = Math.floor(tw.x * 7.31 + tw.y * 3.17);
     for (let i = 0; i < striations; i++) {
       const a = (i / striations) * Math.PI * 2;
-      // randomish length via hash — stable per-tower via tw position
-      const lenFrac = 0.55 + ((i * 13 + Math.floor(tw.x + tw.y)) % 40) / 120;
+      const h = (i * 97 + seed) | 0;
+      const lenFrac = 0.45 + ((h % 55) / 120);
       ctx.beginPath();
-      ctx.moveTo(Math.cos(a) * irisR * 0.25, Math.sin(a) * irisR * 0.25);
+      ctx.moveTo(Math.cos(a) * irisR * 0.22, Math.sin(a) * irisR * 0.22);
+      ctx.lineTo(Math.cos(a) * irisR * lenFrac, Math.sin(a) * irisR * lenFrac);
+      ctx.stroke();
+    }
+    // Secondary set of finer, dimmer striations (iris fiber depth)
+    ctx.strokeStyle = 'rgba(90, 60, 140, 0.4)';
+    ctx.lineWidth = 0.3;
+    for (let i = 0; i < striations; i++) {
+      const a = (i / striations + 0.5 / striations) * Math.PI * 2;
+      const h = (i * 53 + seed + 11) | 0;
+      const lenFrac = 0.35 + ((h % 40) / 140);
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a) * irisR * 0.3, Math.sin(a) * irisR * 0.3);
       ctx.lineTo(Math.cos(a) * irisR * lenFrac, Math.sin(a) * irisR * lenFrac);
       ctx.stroke();
     }
 
-    // Iris outer rim (darker) and inner ring
-    ctx.strokeStyle = 'rgba(10, 0, 20, 0.9)';
-    ctx.lineWidth = 0.8;
+    // Iris crypts — small darker flecks scattered in the iris
+    ctx.fillStyle = 'rgba(8, 0, 18, 0.75)';
+    const crypts = 7;
+    for (let i = 0; i < crypts; i++) {
+      const h = (i * 311 + seed) | 0;
+      const a = ((h & 0xff) / 255) * Math.PI * 2;
+      const r = irisR * (0.35 + (((h >> 8) & 0xff) / 255) * 0.5);
+      const dotR = irisR * (0.04 + (((h >> 16) & 0x1f) / 31) * 0.05);
+      ctx.beginPath();
+      ctx.arc(Math.cos(a) * r, Math.sin(a) * r, dotR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Limbal ring — thicker, distinct dark ring at iris edge (realism tell)
+    ctx.strokeStyle = 'rgba(4, 0, 12, 0.95)';
+    ctx.lineWidth = 1.6;
     ctx.beginPath();
-    ctx.arc(0, 0, irisR * 0.98, 0, Math.PI * 2);
+    ctx.arc(0, 0, irisR - 0.5, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Pupil — tracks cursor
+    // Pupil — tracks cursor; soft gradient edge
     let px = 0, py = 0;
     if (mouseInside) {
       const dx = mouseX - tw.x;
       const dy = mouseY - tw.y;
       const len = Math.hypot(dx, dy) || 1;
-      const maxOff = eyeH * 0.38;
+      const maxOff = eyeH * 0.36;
       px = (dx / len) * maxOff;
       py = (dy / len) * maxOff;
     }
-    // pupil with soft gradient edge (not pure hard black)
     const pupR = eyeH * 0.42;
-    const pupGrad = ctx.createRadialGradient(px, py, 0, px, py, pupR);
-    pupGrad.addColorStop(0, '#000000');
+    const pupGrad = ctx.createRadialGradient(px, py, pupR * 0.2, px, py, pupR);
+    pupGrad.addColorStop(0,    '#000000');
     pupGrad.addColorStop(0.85, '#000000');
-    pupGrad.addColorStop(1, 'rgba(0,0,0,0.6)');
+    pupGrad.addColorStop(1,    'rgba(0,0,0,0.55)');
     ctx.fillStyle = pupGrad;
     ctx.beginPath();
     ctx.arc(px, py, pupR, 0, Math.PI * 2);
     ctx.fill();
 
-    // Catchlights — primary (upper-left) and small secondary (lower-right)
-    ctx.fillStyle = '#ffffff';
-    ctx.globalAlpha = 0.95;
+    // Corneal reflection — a curved highlight on the pupil (J-shape, not a circle)
+    ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+    ctx.lineWidth = pupR * 0.28;
+    ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.arc(px - pupR * 0.35, py - pupR * 0.35, pupR * 0.25, 0, Math.PI * 2);
-    ctx.fill();
-    if (tier >= 4) {
-      ctx.globalAlpha = 0.55;
-      ctx.beginPath();
-      ctx.arc(px + pupR * 0.45, py + pupR * 0.35, pupR * 0.12, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    ctx.moveTo(px - pupR * 0.55, py - pupR * 0.15);
+    ctx.bezierCurveTo(
+      px - pupR * 0.45, py - pupR * 0.7,
+      px + pupR * 0.05, py - pupR * 0.7,
+      px + pupR * 0.25, py - pupR * 0.35
+    );
+    ctx.stroke();
+    // tail of the reflection curving back
+    ctx.lineWidth = pupR * 0.14;
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath();
+    ctx.moveTo(px + pupR * 0.25, py - pupR * 0.35);
+    ctx.quadraticCurveTo(px + pupR * 0.3, py - pupR * 0.15, px + pupR * 0.1, py - pupR * 0.05);
+    ctx.stroke();
     ctx.globalAlpha = 1;
+    ctx.lineCap = 'butt';
 
-    // Curved gloss across the eye surface — the tell that it's wet
-    ctx.globalAlpha = 0.30 + (tier - 1) * 0.04;
+    // Secondary small catchlight (T4+)
+    if (tier >= 4) {
+      ctx.fillStyle = '#ffffff';
+      ctx.globalAlpha = 0.45;
+      ctx.beginPath();
+      ctx.arc(px + pupR * 0.5, py + pupR * 0.4, pupR * 0.10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // Caruncle — tiny pink flesh-dot at the inner corner
+    ctx.fillStyle = 'rgba(196, 110, 120, 0.85)';
+    ctx.beginPath();
+    ctx.ellipse(-eyeW * 0.84, eyeH * 0.15, eyeW * 0.06, eyeH * 0.11, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(220, 160, 170, 0.7)';
+    ctx.beginPath();
+    ctx.ellipse(-eyeW * 0.85, eyeH * 0.12, eyeW * 0.03, eyeH * 0.05, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore(); // unclip
+
+    // 4) Almond outline (after clip, so stroke is crisp)
+    ctx.strokeStyle = 'rgba(30, 8, 24, 0.95)';
+    ctx.lineWidth = 1.1;
+    eyePath();
+    ctx.stroke();
+
+    // 5) Wet gloss arc across the top — suggests the curved cornea
+    ctx.globalAlpha = 0.30 + (tier - 1) * 0.05;
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.arc(0, -eyeH * 0.15, eyeW * 0.85, Math.PI * 1.15, Math.PI * 1.85);
+    ctx.arc(0, -eyeH * 0.1, eyeW * 0.78, Math.PI * 1.18, Math.PI * 1.82);
     ctx.stroke();
+    ctx.globalAlpha = 1;
     ctx.globalAlpha = 1;
 
     // T5: slow unsettling iris-edge pulse
