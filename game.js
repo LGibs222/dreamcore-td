@@ -45,6 +45,10 @@ function makeStars() {
       y: Math.random() * canvas.height,
       r: Math.random() * 1.2 + 0.2,
       twinkle: Math.random() * Math.PI * 2,
+      // each star has its own irregular "flicker-out" period so they drop briefly
+      // at different times — subtle wrongness, like something just passed by.
+      flickerPeriod: 4000 + Math.random() * 8000,
+      flickerPhase:  Math.random() * 10000,
     });
   }
 }
@@ -77,7 +81,10 @@ function drawBackground() {
 
 function drawStars(t) {
   for (const s of stars) {
-    const alpha = 0.4 + 0.6 * Math.abs(Math.sin(t * 0.001 + s.twinkle));
+    let alpha = 0.4 + 0.6 * Math.abs(Math.sin(t * 0.001 + s.twinkle));
+    // occasional brief flicker-out — each star has its own phase
+    const f = ((t + s.flickerPhase) % s.flickerPeriod) / s.flickerPeriod;
+    if (f < 0.03) alpha *= 0.1;
     ctx.globalAlpha = alpha;
     ctx.fillStyle = '#e8e8ff';
     ctx.beginPath();
@@ -687,140 +694,237 @@ function drawStarShape(points, outer, inner) {
   ctx.stroke();
 }
 
-// Crystal Prism visual — evolves across tiers from a simple diamond
-// into a sharper "ethereal mythical" crystal with a realistic watching eye.
-// Dreamcore vibe: beautiful but unsettling.
+// 4-main-tipped polygon with pairs of side-spikes that grow with tier.
+// T1 = 4 points (clean diamond). Each tier adds one more spike per quarter.
+function prismSpikedPolygon(tier, size) {
+  const w = size * (0.66 - (tier - 1) * 0.05);     // belly narrows each tier
+  const perQuarter = Math.max(0, tier - 1);        // 0,1,2,3,4 side spikes per quarter
+  const spikeR = w + (size - w) * 0.72;            // spikes reach out most of the way to main tips
+  const dentR  = w * 0.84;
+
+  const cardinals = [-Math.PI / 2, 0, Math.PI / 2, Math.PI];
+  const cardinalRs = [size, w, size, w];
+
+  const pts = [];
+  for (let q = 0; q < 4; q++) {
+    const a = cardinals[q];
+    pts.push({ x: Math.cos(a) * cardinalRs[q], y: Math.sin(a) * cardinalRs[q] });
+    for (let i = 0; i < perQuarter; i++) {
+      const frac = (i + 1) / (perQuarter + 1);
+      const sa = a + frac * Math.PI / 2;
+      pts.push({ x: Math.cos(sa - 0.09) * dentR, y: Math.sin(sa - 0.09) * dentR });
+      pts.push({ x: Math.cos(sa)        * spikeR, y: Math.sin(sa)        * spikeR });
+      pts.push({ x: Math.cos(sa + 0.09) * dentR, y: Math.sin(sa + 0.09) * dentR });
+    }
+  }
+  return pts;
+}
+
+// Crystal Prism visual — the diamond sprouts more spikes each tier,
+// and a realistic eye grows into the body of the crystal.
+// Dreamcore vibe: the crystal and the eye are fusing.
 function drawCrystalPrismTiered(tw, t) {
   const tier = tw.tier;
-  // Size and sharpness grow with tier — taller/thinner at T5
   const size = 16 + tier * 4;                    // 20, 24, 28, 32, 36
-  const widthRatio = 0.68 - (tier - 1) * 0.055;  // 0.68 → 0.46
   const rot = t * 0.0004;
 
-  // Outer aura — brighter each tier
+  // Outer aura
   drawGlow(0, 0, size * 2.4, '#b8f4ff', 0.18 + (tier - 1) * 0.05);
   if (tier >= 4) drawGlow(0, 0, size * 3.6, '#6ad1ff', 0.10);
 
-  // Diamond body (rotates slowly)
+  // --- Crystal body (rotates) ---
   ctx.save();
   ctx.rotate(rot);
+  const poly = prismSpikedPolygon(tier, size);
   const grad = ctx.createLinearGradient(0, -size, 0, size);
-  // deeper colors at higher tiers — the crystal gets more "alive"
   grad.addColorStop(0, tier >= 4 ? '#e4f8ff' : '#b8f4ff');
   grad.addColorStop(1, tier >= 4 ? '#4aa5ff' : '#6ad1ff');
   ctx.fillStyle = grad;
   ctx.strokeStyle = tier === 5 ? '#ffffff' : '#b8f4ff';
-  ctx.lineWidth = 1.5 + (tier - 1) * 0.35;
-
+  ctx.lineWidth = 1.5 + (tier - 1) * 0.3;
   ctx.beginPath();
-  ctx.moveTo(0, -size);
-  ctx.lineTo(size * widthRatio, 0);
-  ctx.lineTo(0, size);
-  ctx.lineTo(-size * widthRatio, 0);
+  ctx.moveTo(poly[0].x, poly[0].y);
+  for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
   ctx.closePath();
   ctx.fill();
   ctx.stroke();
 
-  // Inner facet highlight (gets brighter at higher tiers)
-  ctx.globalAlpha = 0.35 + (tier - 1) * 0.1;
+  // Inner facet highlight
+  ctx.globalAlpha = 0.32 + (tier - 1) * 0.08;
   ctx.fillStyle = '#ffffff';
   ctx.beginPath();
-  ctx.moveTo(0, -size * 0.78);
-  ctx.lineTo(-size * widthRatio * 0.35, -size * 0.1);
-  ctx.lineTo(-size * widthRatio * 0.55, size * 0.35);
+  ctx.moveTo(0, -size * 0.82);
+  ctx.lineTo(-size * 0.18, -size * 0.08);
+  ctx.lineTo(-size * 0.26, size * 0.28);
   ctx.closePath();
   ctx.fill();
   ctx.globalAlpha = 1;
+
+  // Cracks radiating from the eye outward into the crystal (tier 3+).
+  // They rotate with the crystal — the eye sits still while the gem spins around it.
+  if (tier >= 3) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 240, 255, 0.4)';
+    ctx.lineWidth = 0.7;
+    const crackCount = tier - 1;
+    for (let i = 0; i < crackCount; i++) {
+      const a = (i / crackCount) * Math.PI * 2 + (t * 0.0002);
+      const r0 = size * 0.28;
+      const r1 = size * 0.85;
+      ctx.beginPath();
+      const x0 = Math.cos(a) * r0, y0 = Math.sin(a) * r0;
+      const xm = Math.cos(a + 0.15) * (r0 + r1) * 0.5;
+      const ym = Math.sin(a + 0.15) * (r0 + r1) * 0.5;
+      const x1 = Math.cos(a) * r1, y1 = Math.sin(a) * r1;
+      ctx.moveTo(x0, y0);
+      ctx.quadraticCurveTo(xm, ym, x1, y1);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
   ctx.restore();
 
-  // The Eye — does NOT rotate with the diamond (keeps looking out).
-  // Appears gradually: T2 is a subtle slit, T5 is a realistic watching eye.
+  // --- The Eye — stays upright (doesn't rotate with the crystal) ---
   if (tier >= 2) {
     const growth = (tier - 1) / 4;           // 0.25, 0.50, 0.75, 1.00
-    const eyeW = size * 0.46 * growth;
-    const eyeH = size * 0.24 * growth;
+    const eyeW = size * 0.56 * growth;
+    const eyeH = size * 0.30 * growth;
 
     if (tier === 2) {
-      // just a faint vertical pupil slit — the hint of something alive
+      // First hint of something alive — a thin vertical pupil-slit
       ctx.save();
-      ctx.globalAlpha = 0.75;
-      ctx.fillStyle = '#1a0a2a';
-      ctx.fillRect(-0.9, -eyeH, 1.8, eyeH * 2);
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = '#1a0510';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 1.2, eyeH * 0.9, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // subtle red iris hint
+      ctx.globalAlpha = 0.25;
+      ctx.fillStyle = '#ff4a6a';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 3, eyeH * 1.1, 0, 0, Math.PI * 2);
+      ctx.fill();
       ctx.restore();
-    } else {
-      // Sclera (white of the eye) — slightly off-white for realism
-      ctx.save();
-      ctx.fillStyle = tier >= 5 ? '#f8efe0' : '#ede0ca';
-      ctx.beginPath();
-      ctx.ellipse(0, 0, eyeW, eyeH, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(40, 10, 30, 0.8)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-
-      // Iris — deep dreamy purple
-      const irisR = eyeH * 0.85;
-      ctx.fillStyle = tier >= 5 ? '#2a0d4f' : '#3a1f6a';
-      ctx.beginPath();
-      ctx.arc(0, 0, irisR, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Iris detail ring
-      ctx.strokeStyle = '#9a6ad0';
-      ctx.lineWidth = 0.7;
-      ctx.beginPath();
-      ctx.arc(0, 0, irisR * 0.62, 0, Math.PI * 2);
-      ctx.stroke();
-
-      // Pupil — tracks the cursor for "it's watching you" effect
-      let px = 0, py = 0;
-      if (mouseInside) {
-        const dx = mouseX - tw.x;
-        const dy = mouseY - tw.y;
-        const len = Math.hypot(dx, dy) || 1;
-        const maxOff = eyeH * 0.4;
-        px = (dx / len) * maxOff;
-        py = (dy / len) * maxOff;
-      }
-      ctx.fillStyle = '#000000';
-      ctx.beginPath();
-      ctx.arc(px, py, eyeH * 0.4, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Catchlight on the pupil (T4+) — the realism tell
-      if (tier >= 4) {
-        ctx.globalAlpha = 0.9;
-        ctx.fillStyle = '#ffffff';
-        ctx.beginPath();
-        ctx.arc(px - eyeH * 0.15, py - eyeH * 0.15, eyeH * 0.12, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 1;
-      }
-
-      // T5: the unsettling details — veins and a subtle blood-red edge
-      if (tier === 5) {
-        ctx.strokeStyle = 'rgba(185, 40, 55, 0.7)';
-        ctx.lineWidth = 0.6;
-        ctx.beginPath();
-        ctx.moveTo(-eyeW * 0.95, -eyeH * 0.25);
-        ctx.quadraticCurveTo(-eyeW * 0.55, -eyeH * 0.05, -eyeW * 0.22, eyeH * 0.1);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(eyeW * 0.9, eyeH * 0.3);
-        ctx.quadraticCurveTo(eyeW * 0.5, eyeH * 0.4, eyeW * 0.15, eyeH * 0.2);
-        ctx.stroke();
-        // a slow, subtle pulse on the iris edge
-        const pulse = 0.4 + 0.3 * Math.sin(t * 0.003);
-        ctx.globalAlpha = pulse * 0.5;
-        ctx.strokeStyle = '#ff6a88';
-        ctx.lineWidth = 0.8;
-        ctx.beginPath();
-        ctx.arc(0, 0, irisR * 1.02, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-      }
-      ctx.restore();
+      return;
     }
+
+    ctx.save();
+
+    // Sclera with top-shadow gradient — the "eyelid" dimension
+    const scleraGrad = ctx.createLinearGradient(0, -eyeH, 0, eyeH);
+    scleraGrad.addColorStop(0, '#c8b9a0');     // darker up top (lid shadow)
+    scleraGrad.addColorStop(0.4, '#f2e4ca');
+    scleraGrad.addColorStop(1,   '#ede0ca');
+    ctx.fillStyle = scleraGrad;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, eyeW, eyeH, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(40, 10, 30, 0.85)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Subtle vein network on the sclera — gets denser with tier
+    ctx.strokeStyle = 'rgba(165, 30, 55, 0.55)';
+    ctx.lineWidth = 0.5;
+    const veins = Math.max(0, tier - 2);       // 1,2,3 veins for T3,T4,T5
+    for (let i = 0; i < veins; i++) {
+      const sign = i % 2 === 0 ? -1 : 1;
+      const yOff = (i / veins - 0.5) * eyeH * 1.2;
+      ctx.beginPath();
+      ctx.moveTo(sign * eyeW * 0.92, yOff);
+      ctx.quadraticCurveTo(sign * eyeW * 0.5, yOff * 0.7, sign * eyeW * 0.2, yOff * 0.3);
+      ctx.stroke();
+    }
+
+    // Iris — deep violet with radial striations (realism detail)
+    const irisR = eyeH * 0.88;
+    const irisGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, irisR);
+    irisGrad.addColorStop(0, '#3a1f6a');
+    irisGrad.addColorStop(0.7, '#1a0a4a');
+    irisGrad.addColorStop(1, '#0a0420');
+    ctx.fillStyle = irisGrad;
+    ctx.beginPath();
+    ctx.arc(0, 0, irisR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Radial iris striations — many thin lines from near pupil outward
+    ctx.strokeStyle = 'rgba(160, 120, 220, 0.5)';
+    ctx.lineWidth = 0.45;
+    const striations = 32;
+    for (let i = 0; i < striations; i++) {
+      const a = (i / striations) * Math.PI * 2;
+      // randomish length via hash — stable per-tower via tw position
+      const lenFrac = 0.55 + ((i * 13 + Math.floor(tw.x + tw.y)) % 40) / 120;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a) * irisR * 0.25, Math.sin(a) * irisR * 0.25);
+      ctx.lineTo(Math.cos(a) * irisR * lenFrac, Math.sin(a) * irisR * lenFrac);
+      ctx.stroke();
+    }
+
+    // Iris outer rim (darker) and inner ring
+    ctx.strokeStyle = 'rgba(10, 0, 20, 0.9)';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.arc(0, 0, irisR * 0.98, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Pupil — tracks cursor
+    let px = 0, py = 0;
+    if (mouseInside) {
+      const dx = mouseX - tw.x;
+      const dy = mouseY - tw.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const maxOff = eyeH * 0.38;
+      px = (dx / len) * maxOff;
+      py = (dy / len) * maxOff;
+    }
+    // pupil with soft gradient edge (not pure hard black)
+    const pupR = eyeH * 0.42;
+    const pupGrad = ctx.createRadialGradient(px, py, 0, px, py, pupR);
+    pupGrad.addColorStop(0, '#000000');
+    pupGrad.addColorStop(0.85, '#000000');
+    pupGrad.addColorStop(1, 'rgba(0,0,0,0.6)');
+    ctx.fillStyle = pupGrad;
+    ctx.beginPath();
+    ctx.arc(px, py, pupR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Catchlights — primary (upper-left) and small secondary (lower-right)
+    ctx.fillStyle = '#ffffff';
+    ctx.globalAlpha = 0.95;
+    ctx.beginPath();
+    ctx.arc(px - pupR * 0.35, py - pupR * 0.35, pupR * 0.25, 0, Math.PI * 2);
+    ctx.fill();
+    if (tier >= 4) {
+      ctx.globalAlpha = 0.55;
+      ctx.beginPath();
+      ctx.arc(px + pupR * 0.45, py + pupR * 0.35, pupR * 0.12, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // Curved gloss across the eye surface — the tell that it's wet
+    ctx.globalAlpha = 0.30 + (tier - 1) * 0.04;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(0, -eyeH * 0.15, eyeW * 0.85, Math.PI * 1.15, Math.PI * 1.85);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // T5: slow unsettling iris-edge pulse
+    if (tier === 5) {
+      const pulse = 0.4 + 0.3 * Math.sin(t * 0.0025);
+      ctx.globalAlpha = pulse * 0.6;
+      ctx.strokeStyle = '#ff4a6a';
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.arc(0, 0, irisR * 1.03, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    ctx.restore();
   }
 }
 
