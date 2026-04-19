@@ -129,6 +129,7 @@ function spawnEnemy(hpOverride, speedOverride) {
     radius: 7 + Math.random() * 3,
     hp: maxHp,
     maxHp,
+    stunTimer: 0,
   });
 }
 
@@ -222,7 +223,12 @@ window.addEventListener('keydown', (e) => {
 function enemyPos(e) { return pathPoint(e.progress); }
 
 function updateEnemies(dt) {
-  for (const e of enemies) e.progress += e.speed * slowMultiplierFor(e) * dt;
+  for (const e of enemies) {
+    if (e.stunTimer > 0) e.stunTimer -= dt;
+    const stunned = e.stunTimer > 0;
+    const mult = stunned ? 0 : slowMultiplierFor(e);
+    e.progress += e.speed * mult * dt;
+  }
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (e.hp <= 0) {
@@ -244,6 +250,19 @@ function updateEnemies(dt) {
 function drawEnemies() {
   for (const e of enemies) {
     const p = pathPoint(e.progress);
+    // stun halo — bright pink ring that fades as the stun wears off
+    if (e.stunTimer > 0) {
+      const alpha = Math.min(1, e.stunTimer / 500);
+      ctx.save();
+      ctx.globalAlpha = 0.7 * alpha;
+      ctx.strokeStyle = '#ffd0f5';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, e.radius * 2.2, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      drawGlow(p.x, p.y, e.radius * 4, '#ffd0f5', 0.25 * alpha);
+    }
     drawGlow(p.x, p.y, e.radius * 3, COLORS.enemyMid,  0.35);
     drawGlow(p.x, p.y, e.radius,     COLORS.enemyCore, 1.00);
     // thin HP bar above the shard, only when damaged
@@ -269,7 +288,7 @@ const TOWER_TYPES = {
   prism: {
     name: 'Crystal Prism',   key: '1', cost: 50,
     behavior: 'shoot',
-    baseRange: 160, baseDamage: 10, fireInterval: 700,
+    baseRange: 160, baseDamage: 15, fireInterval: 700,
     color: '#b8f4ff',
   },
   lantern: {
@@ -281,7 +300,7 @@ const TOWER_TYPES = {
   beacon: {
     name: 'Memory Beacon',   key: '3', cost: 70,
     behavior: 'dot',
-    baseRange: 140, tickInterval: 300, tickDamage: 4,
+    baseRange: 140, tickInterval: 300, tickDamage: 9,
     color: '#a8ffd8',
   },
   watcher: {
@@ -298,8 +317,15 @@ const TOWER_TYPES = {
   },
   supernova: {
     name: 'Supernova Burst', key: '6', cost: 120,
-    behavior: 'aoe',
-    baseRange: 130, baseDamage: 18, fireInterval: 1500,
+    behavior: 'shoot-explode',
+    baseRange: 260,                        // can lob across a wide area
+    baseDamage: 20,                        // direct hit damage
+    fireInterval: 1500,
+    aoeDamage: 12,                         // splash to nearby enemies
+    aoeRadius: 90,
+    stunMs: 1500,                          // direct-hit target is frozen for 1.5s
+    projectileSpeed: 0.9,                  // fast!
+    homing: 0.55,                          // heavy homing blend per frame
     color: '#ffd0f5',
   },
 };
@@ -364,26 +390,27 @@ function updateTowers(dt) {
       });
       tw.fireCooldown = t.fireInterval;
 
-    } else if (t.behavior === 'aoe') {
+    } else if (t.behavior === 'shoot-explode') {
       if (tw.fireCooldown > 0) continue;
-      // only fire if someone is in range
-      let anyone = false;
-      for (const e of enemies) {
-        const p = enemyPos(e);
-        if (Math.hypot(p.x - tw.x, p.y - tw.y) <= tw.effectiveRange) { anyone = true; break; }
-      }
-      if (!anyone) continue;
-      for (const e of enemies) {
-        const p = enemyPos(e);
-        if (Math.hypot(p.x - tw.x, p.y - tw.y) <= tw.effectiveRange) {
-          e.hp -= tw.effectiveDamage;
-        }
-      }
-      blasts.push({
+      const target = findTargetInRange(tw, tw.effectiveRange);
+      if (!target) continue;
+      const p = enemyPos(target);
+      const dx = p.x - tw.x, dy = p.y - tw.y;
+      const len = Math.hypot(dx, dy) || 1;
+      projectiles.push({
         x: tw.x, y: tw.y,
-        radius: 0, maxRadius: tw.effectiveRange,
-        life: 500, maxLife: 500,
+        vx: (dx / len) * t.projectileSpeed,
+        vy: (dy / len) * t.projectileSpeed,
+        speed: t.projectileSpeed,
+        homing: t.homing,
+        damage: tw.effectiveDamage,
+        aoeDamage: t.aoeDamage,
+        aoeRadius: t.aoeRadius,
+        stunMs: t.stunMs,
+        target,
         color: t.color,
+        kind: 'explode',
+        rotation: 0,
       });
       tw.fireCooldown = t.fireInterval;
 
@@ -419,32 +446,59 @@ function slowMultiplierFor(e) {
 function updateProjectiles(dt) {
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const pr = projectiles[i];
-    // mild homing so projectiles don't miss curving enemies
+    const speed = pr.speed || PROJECTILE_SPEED;
+    const homing = pr.homing ?? 0.15;
+
+    // homing: re-aim toward target each frame
     if (pr.target && pr.target.hp > 0 && enemies.includes(pr.target)) {
       const tp = enemyPos(pr.target);
       const dx = tp.x - pr.x, dy = tp.y - pr.y;
       const len = Math.hypot(dx, dy) || 1;
-      const want_vx = (dx / len) * PROJECTILE_SPEED;
-      const want_vy = (dy / len) * PROJECTILE_SPEED;
-      // blend toward desired direction (soft homing)
-      pr.vx = pr.vx * 0.85 + want_vx * 0.15;
-      pr.vy = pr.vy * 0.85 + want_vy * 0.15;
+      const wantVx = (dx / len) * speed;
+      const wantVy = (dy / len) * speed;
+      pr.vx = pr.vx * (1 - homing) + wantVx * homing;
+      pr.vy = pr.vy * (1 - homing) + wantVy * homing;
     }
     pr.x += pr.vx * dt;
     pr.y += pr.vy * dt;
+    if (pr.rotation !== undefined) pr.rotation += dt * 0.02;
 
-    // hit detection — any enemy within its radius
-    let hit = false;
+    // hit detection
+    let hitEnemy = null;
     for (const e of enemies) {
       const p = enemyPos(e);
       if (Math.hypot(pr.x - p.x, pr.y - p.y) < e.radius + 4) {
-        e.hp -= pr.damage;
-        hit = true;
+        hitEnemy = e;
         break;
       }
     }
-    // off-screen or hit → remove
-    if (hit ||
+
+    if (hitEnemy) {
+      if (pr.kind === 'explode') {
+        // direct hit: damage + stun
+        hitEnemy.hp -= pr.damage;
+        hitEnemy.stunTimer = Math.max(hitEnemy.stunTimer || 0, pr.stunMs);
+        // splash to all other enemies within aoeRadius of impact point
+        for (const e of enemies) {
+          if (e === hitEnemy) continue;
+          const p = enemyPos(e);
+          if (Math.hypot(pr.x - p.x, pr.y - p.y) < pr.aoeRadius) {
+            e.hp -= pr.aoeDamage;
+          }
+        }
+        // expanding ring visual
+        blasts.push({
+          x: pr.x, y: pr.y,
+          radius: 0, maxRadius: pr.aoeRadius,
+          life: 420, maxLife: 420,
+          color: pr.color,
+        });
+      } else {
+        hitEnemy.hp -= pr.damage;
+      }
+    }
+
+    if (hitEnemy ||
         pr.x < -20 || pr.x > canvas.width + 20 ||
         pr.y < -20 || pr.y > canvas.height + 20) {
       projectiles.splice(i, 1);
@@ -454,11 +508,24 @@ function updateProjectiles(dt) {
 
 function drawProjectiles() {
   for (const pr of projectiles) {
-    drawGlow(pr.x, pr.y, 10, pr.color || COLORS.prismCore, 0.7);
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.arc(pr.x, pr.y, 2.2, 0, Math.PI * 2);
-    ctx.fill();
+    if (pr.kind === 'explode') {
+      // spinning 5-pointed star
+      ctx.save();
+      drawGlow(pr.x, pr.y, 20, pr.color, 0.7);
+      ctx.translate(pr.x, pr.y);
+      ctx.rotate(pr.rotation || 0);
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = pr.color;
+      ctx.lineWidth = 1.5;
+      drawStarShape(5, 10, 4);
+      ctx.restore();
+    } else {
+      drawGlow(pr.x, pr.y, 10, pr.color || COLORS.prismCore, 0.7);
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(pr.x, pr.y, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 }
 
